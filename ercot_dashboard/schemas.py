@@ -188,13 +188,12 @@ class DashboardSnapshot(ApiModel):
     ercot_dashboards: dict[str, Any] = Field(default_factory=dict)
     eia_gas: dict[str, Any] = Field(default_factory=dict)
     climate: dict[str, Any] = Field(default_factory=dict)
+    diagnostics: dict[str, Any] = Field(default_factory=dict)
     metrics: DashboardMetrics
     trends: dict[str, list[TimeSeriesPoint]] = Field(default_factory=dict)
     events: list[EventRecord] = Field(default_factory=list)
     fanout: FanoutMeta
     source_status: dict[str, SourceStatus] = Field(default_factory=dict)
-    scenario: str | None = Field(default=None, examples=["Heatwave simulation"])
-    active_scenario: dict[str, Any] | None = Field(default=None)
 
 
 class SourceBundle(ApiModel):
@@ -205,6 +204,29 @@ class SourceBundle(ApiModel):
     source_count: int = Field(..., ge=0)
     status: SourceStatus
     refresh_policy: dict[str, Any] = Field(default_factory=dict)
+    data: dict[str, Any] = Field(default_factory=dict)
+
+
+class FeedEndpoint(ApiModel):
+    name: str = Field(..., examples=["ercot-prc"])
+    provider: str = Field(..., examples=["ERCOT"])
+    title: str = Field(..., examples=["Physical Responsive Capability"])
+    local_url: str = Field(..., examples=["/api/ercot/public-dashboards/prc"])
+    upstream_url: str = Field(default="", examples=["https://www.ercot.com/api/1/services/read/dashboards/daily-prc.json"])
+    description: str = Field(default="")
+
+
+class FeedCatalogResponse(ApiModel):
+    feeds: list[FeedEndpoint] = Field(default_factory=list)
+
+
+class FeedSnapshotResponse(ApiModel):
+    timestamp: str
+    name: str = Field(..., examples=["ercot-prc"])
+    provider: str = Field(..., examples=["ERCOT"])
+    title: str = Field(..., examples=["Physical Responsive Capability"])
+    source_url: str = Field(default="")
+    status: SourceStatus
     data: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -273,6 +295,8 @@ class ErcotPublicDashboardsResponse(ApiModel):
     prc: dict[str, Any] = Field(default_factory=dict)
     fuel_mix: dict[str, Any] = Field(default_factory=dict)
     storage: dict[str, Any] = Field(default_factory=dict)
+    combined_renewables: dict[str, Any] = Field(default_factory=dict)
+    dc_ties: dict[str, Any] = Field(default_factory=dict)
     outages: dict[str, Any] = Field(default_factory=dict)
     ancillary: dict[str, Any] = Field(default_factory=dict)
     status: SourceStatus
@@ -281,7 +305,9 @@ class ErcotPublicDashboardsResponse(ApiModel):
 class EiaNaturalGasResponse(ApiModel):
     timestamp: str
     storage: dict[str, Any] = Field(default_factory=dict)
+    balance: dict[str, Any] = Field(default_factory=dict)
     steo: dict[str, Any] = Field(default_factory=dict)
+    wells: dict[str, Any] = Field(default_factory=dict)
     status: SourceStatus
 
 
@@ -295,50 +321,6 @@ class DegreeDayForecastResponse(ApiModel):
     regions: list[dict[str, Any]] = Field(default_factory=list)
     summary: dict[str, Any] = Field(default_factory=dict)
     status: SourceStatus
-
-
-class ScenarioInput(ApiModel):
-    model_config = ConfigDict(
-        extra="allow",
-        json_schema_extra={
-            "examples": [
-                {
-                    "timestamp": "2026-05-13T15:55:00+00:00",
-                    "ercot": {"load_mw": 64150, "generation_mw": 71980, "wind_mw": 12840, "solar_mw": 7420},
-                    "noaa": {"temperature_f": 86, "daily_high_f": 95},
-                    "metrics": {"stress_index": 41.7},
-                }
-            ]
-        },
-    )
-
-    timestamp: str | None = None
-    ercot: dict[str, Any] | None = None
-    noaa: dict[str, Any] | None = None
-    metrics: dict[str, Any] | None = None
-
-
-class ScenarioPreviewCard(ApiModel):
-    label: str
-    status: str
-    summary: str = ""
-    color: str = "cyan"
-    stress_index: float
-    stress_delta: float
-    load_mw: float
-    generation_mw: float | None = None
-    wind_mw: float
-    reserve_margin_pct: float | None = None
-    temperature_f: float | None = None
-    balance_mw: float | None = None
-    price_proxy: float | None = None
-    impacts: list[dict[str, Any]] = Field(default_factory=list)
-
-
-class ScenarioPreviewResponse(ApiModel):
-    timestamp: str
-    strategy: str = Field(..., examples=["asyncio.gather"])
-    cards: list[ScenarioPreviewCard] = Field(default_factory=list)
 
 
 class StreamChannel(ApiModel):

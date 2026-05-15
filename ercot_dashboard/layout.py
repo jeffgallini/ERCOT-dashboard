@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from dash import dcc, html
 from dash_iconify import DashIconify
+import dash_leaflet as dl
 import dash_mantine_components as dmc
+
+from ercot_dashboard.figures import GRID_MAP_CENTER, GRID_MAP_TILE_ATTRIBUTION, GRID_MAP_TILE_URL
 
 
 THEME = {
@@ -29,13 +32,13 @@ THEME = {
 PROCESS_HELP_TOPICS = [
     {
         "title": "API endpoints",
-        "summary": "FastAPI routes normalize upstream ERCOT, EIA, NOAA, event, stream, and scenario work before Dash consumes it.",
+        "summary": "FastAPI routes normalize upstream ERCOT, EIA, NOAA, event, and stream work before Dash consumes it.",
         "icon": "tabler:api",
         "color": "cyan",
         "details": [
             "GET /api/dashboard returns the full dashboard snapshot.",
             "GET /api/source/* feeds the independent async stores.",
-            "POST /api/scenario/* applies scenario transforms over the current state.",
+            "GET /api/ercot/public-dashboards exposes normalized ERCOT dashboard feeds.",
         ],
         "code": ["api.py -> register_api_routes", "services/dashboard.py -> get_dashboard_snapshot"],
     },
@@ -46,7 +49,6 @@ PROCESS_HELP_TOPICS = [
         "color": "green",
         "details": [
             "Source callbacks await /api/source/* endpoints.",
-            "Scenario preview posts to FastAPI from a websocket callback.",
             "Service fanout uses asyncio.gather for concurrent upstream calls.",
         ],
         "code": ["callbacks.py -> refresh_*_source", "services/dashboard.py -> _source_bundle"],
@@ -124,8 +126,6 @@ def build_layout() -> dmc.MantineProvider:
                     dcc.Store(id="energy-store"),
                     dcc.Store(id="climate-store"),
                     dcc.Store(id="market-store"),
-                    dcc.Store(id="scenario-control-store", data={}),
-                    dcc.Store(id="scenario-preview-store"),
                     dcc.Store(id="map-price-store"),
                     dcc.Store(id="event-log-store", data=[]),
                     dcc.Interval(id="refresh-interval", interval=20_000, n_intervals=0),
@@ -135,7 +135,6 @@ def build_layout() -> dmc.MantineProvider:
                     dcc.Interval(id="energy-refresh-interval", interval=300_000, n_intervals=0),
                     dcc.Interval(id="climate-refresh-interval", interval=900_000, n_intervals=0),
                     dcc.Interval(id="map-price-retry-interval", interval=10_000, n_intervals=0),
-                    dcc.Interval(id="telemetry-interval", interval=5_000, n_intervals=0),
                     dmc.Stack(
                         [
                             _command_strip(),
@@ -260,10 +259,19 @@ def _command_strip() -> dmc.Box:
                         [
                             dmc.Badge("20s cadence", color="cyan", variant="light"),
                             dmc.Badge("ASGI", color="violet", variant="light"),
-                            dmc.Badge("Scenario-ready", color="green", variant="light"),
+                            dmc.Badge("ERCOT public dashboards", color="green", variant="light"),
+                            dmc.Button(
+                                "Refresh all",
+                                id="refresh-button",
+                                color="cyan",
+                                variant="filled",
+                                leftSection=DashIconify(icon="tabler:refresh", width=18),
+                                size="xs",
+                                className="refresh-button",
+                            ),
                         ],
                         gap="xs",
-                        visibleFrom="sm",
+                        wrap="wrap",
                     ),
                 ],
                 justify="space-between",
@@ -304,13 +312,35 @@ def _map_panel() -> dmc.Card:
     return dmc.Card(
         [
             _section_header(
-                icon="tabler:map-2",
-                title="ERCOT Operations Map",
+                icon="tabler:map-dollar",
+                title="Real-Time Locational Prices",
                 right=dmc.Text(id="map-caption", size="sm", c="dimmed", className="panel-caption"),
             ),
             dmc.Box(
                 [
-                    dcc.Graph(id="grid-map", config={"displayModeBar": False}, className="map-graph"),
+                    dl.Map(
+                        id="grid-map",
+                        children=[
+                            dl.TileLayer(
+                                url=GRID_MAP_TILE_URL,
+                                attribution=GRID_MAP_TILE_ATTRIBUTION,
+                                maxZoom=18,
+                            )
+                        ],
+                        center=GRID_MAP_CENTER,
+                        zoom=4.75,
+                        minZoom=4,
+                        maxZoom=8,
+                        zoomControl=False,
+                        dragging=False,
+                        doubleClickZoom=False,
+                        boxZoom=False,
+                        touchZoom=False,
+                        keyboard=False,
+                        scrollWheelZoom=False,
+                        className="map-graph leaflet-grid-map",
+                        style={"width": "100%"},
+                    ),
                     dmc.LoadingOverlay(
                         id="map-price-loader",
                         visible=True,
@@ -335,7 +365,13 @@ def _supply_demand_panel() -> dmc.Card:
                 title="ERCOT Supply and Demand",
                 right=dmc.Text(id="supply-demand-caption", size="sm", c="dimmed", className="panel-caption"),
             ),
-            dcc.Graph(id="supply-demand-chart", config={"displayModeBar": False}, className="supply-demand-graph"),
+            dmc.Box(
+                [
+                    dcc.Graph(id="supply-demand-chart", config={"displayModeBar": False}, className="supply-demand-graph"),
+                    _loading_overlay("supply-demand-chart-loader"),
+                ],
+                className="chart-figure-shell",
+            ),
         ],
         withBorder=True,
         padding="md",
@@ -348,20 +384,34 @@ def _ercot_dashboard_gallery() -> dmc.Card:
         [
             _section_header(
                 icon="tabler:layout-dashboard",
-                title="ERCOT Dashboard Replica",
-                right=dmc.Badge("Public feeds", color="cyan", variant="light"),
+                title="Grid and Market Conditions",
+                right=dmc.Anchor(
+                    dmc.Badge(
+                        "ercot.com/gridmktinfo/dashboards",
+                        color="cyan",
+                        variant="light",
+                        leftSection=DashIconify(icon="tabler:external-link", width=13),
+                    ),
+                    href="https://www.ercot.com/gridmktinfo/dashboards",
+                    target="_blank",
+                    underline="never",
+                ),
             ),
             dmc.Grid(
                 [
-                    dmc.GridCol(_chart_tile("tabler:heartbeat", "Physical Responsive Capability", "prc-chart"), span={"base": 12, "lg": 4}),
+                    dmc.GridCol(_chart_tile("tabler:heartbeat", "Grid Conditions", "prc-chart"), span={"base": 12, "lg": 4}),
                     dmc.GridCol(
                         _chart_tile("tabler:currency-dollar", "System Prices", "system-price-chart"),
                         span={"base": 12, "lg": 4},
                     ),
+                    dmc.GridCol(_chart_tile("tabler:chart-line", "System-Wide Demand", "system-demand-chart"), span={"base": 12, "lg": 4}),
                     dmc.GridCol(_chart_tile("tabler:chart-area", "Generation Fuel Mix", "ercot-fuel-stack"), span={"base": 12, "lg": 8}),
                     dmc.GridCol(_chart_tile("tabler:battery-charging", "Energy Storage Resources", "storage-chart"), span={"base": 12, "md": 4}),
+                    dmc.GridCol(_chart_tile("tabler:windmill", "Combined Wind and Solar", "combined-renewables-chart"), span={"base": 12, "lg": 4}),
                     dmc.GridCol(_chart_tile("tabler:plug-connected-x", "Generation Outages", "outages-chart"), span={"base": 12, "md": 4}),
                     dmc.GridCol(_chart_tile("tabler:adjustments-bolt", "Ancillary Services", "ancillary-chart"), span={"base": 12, "md": 4}),
+                    dmc.GridCol(_chart_tile("tabler:route-square-2", "DC Tie Flows", "dc-tie-chart"), span={"base": 12, "md": 4}),
+                    dmc.GridCol(_chart_tile("tabler:map-dollar", "Load-Zone Prices", "load-zone-price-chart"), span={"base": 12, "md": 6}),
                 ],
                 gutter="md",
             ),
@@ -376,15 +426,15 @@ def _energy_climate_panel() -> dmc.Card:
     return dmc.Card(
         [
             _section_header(
-                icon="tabler:chart-infographic",
-                title="Gas and Climate Outlook",
-                right=dmc.Badge("EIA + CPC", color="green", variant="light"),
+                icon="tabler:flame",
+                title="Natural Gas Intelligence",
+                right=dmc.Badge("EIA API v2", color="orange", variant="light"),
             ),
             dmc.Grid(
                 [
-                    dmc.GridCol(_chart_tile("tabler:database", "Natural Gas Storage", "eia-gas-storage-chart"), span={"base": 12, "lg": 4}),
+                    dmc.GridCol(_chart_tile("tabler:database", "Underground Storage by Region", "eia-gas-storage-chart"), span={"base": 12, "lg": 4}),
+                    dmc.GridCol(_chart_tile("tabler:arrows-exchange-2", "STEO Supply, Consumption + Inventory", "eia-gas-balance-chart"), span={"base": 12, "lg": 4}),
                     dmc.GridCol(_chart_tile("tabler:chart-line", "STEO Henry Hub + Inventory", "steo-gas-chart"), span={"base": 12, "lg": 4}),
-                    dmc.GridCol(_chart_tile("tabler:temperature", "Texas Climate Degree Days", "degree-day-chart"), span={"base": 12, "lg": 4}),
                 ],
                 gutter="md",
             ),
@@ -407,9 +457,24 @@ def _chart_tile(icon: str, title: str, graph_id: str) -> dmc.Box:
                 wrap="nowrap",
                 className="chart-tile-header",
             ),
-            dcc.Graph(id=graph_id, config={"displayModeBar": False}, className="market-graph"),
+            dmc.Box(
+                [
+                    dcc.Graph(id=graph_id, config={"displayModeBar": False}, className="market-graph"),
+                    _loading_overlay(f"{graph_id}-loader"),
+                ],
+                className="chart-figure-shell",
+            ),
         ],
         className="chart-tile",
+    )
+
+
+def _loading_overlay(component_id: str) -> dmc.LoadingOverlay:
+    return dmc.LoadingOverlay(
+        id=component_id,
+        visible=True,
+        loaderProps={"type": "bars", "color": "cyan"},
+        overlayProps={"radius": "sm", "blur": 2},
     )
 
 
@@ -418,8 +483,8 @@ def _system_panel() -> dmc.Card:
         [
             _section_header(
                 icon="tabler:gauge",
-                title="System Intelligence",
-                right=dmc.Badge("Computed", color="violet", variant="light"),
+                title="Grid Conditions",
+                right=dmc.Badge("Operating reserves proxy", color="violet", variant="light"),
             ),
             dmc.Box(id="system-overview"),
         ],
@@ -432,31 +497,16 @@ def _system_panel() -> dmc.Card:
 def _side_panel() -> dmc.Stack:
     return dmc.Stack(
         [
-            _transport_panel(),
-            _developer_guide_panel(),
-            _scenario_controls(),
-            dmc.Card(
-                [
-                    _section_header(
-                        icon="tabler:chart-donut",
-                        title="EIA Fuel Mix",
-                        right=dmc.Text(id="fuel-period", size="xs", c="dimmed", className="panel-caption"),
-                    ),
-                    dcc.Graph(id="fuel-mix", config={"displayModeBar": False}, className="fuel-graph"),
-                ],
-                withBorder=True,
-                padding="md",
-                className="panel-card",
-            ),
+            _dashboard_index_panel(),
             dmc.Card(
                 [
                     _section_header(
                         icon="tabler:terminal-2",
-                        title="Event Feed",
+                        title="Diagnostics Feed",
                         right=dmc.Group(
                             [
                                 dmc.Badge("0 events", id="event-feed-count", color="gray", variant="light"),
-                                dmc.Badge("Deduped", color="green", variant="light"),
+                                dmc.Badge("Real-time signals", color="cyan", variant="light"),
                             ],
                             gap=6,
                             wrap="nowrap",
@@ -470,6 +520,53 @@ def _side_panel() -> dmc.Stack:
             ),
         ],
         gap="md",
+    )
+
+
+def _dashboard_index_panel() -> dmc.Card:
+    dashboards = [
+        ("Supply and Demand", "tabler:chart-area-line", "Current-day capacity, demand, and forecast"),
+        ("Grid Conditions", "tabler:heartbeat", "Operating reserves and PRC posture"),
+        ("Real-Time Prices", "tabler:map-dollar", "Load-zone LMPs and market map"),
+        ("Fuel Mix", "tabler:chart-area", "Generation by resource type"),
+        ("Energy Storage", "tabler:battery-charging", "ESR charge and discharge"),
+        ("Ancillary Services", "tabler:adjustments-bolt", "Reserve products and system frequency context"),
+    ]
+    return dmc.Card(
+        [
+            _section_header(
+                icon="tabler:list-details",
+                title="Dashboard Index",
+                right=dmc.Badge("Public ERCOT shape", color="cyan", variant="light"),
+            ),
+            dmc.Stack(
+                [_dashboard_index_item(title, icon, caption) for title, icon, caption in dashboards],
+                gap="xs",
+            ),
+        ],
+        withBorder=True,
+        padding="md",
+        className="panel-card dashboard-index-panel",
+    )
+
+
+def _dashboard_index_item(title: str, icon: str, caption: str) -> dmc.Box:
+    return dmc.Box(
+        dmc.Group(
+            [
+                dmc.ThemeIcon(DashIconify(icon=icon, width=17), color="cyan", variant="light", radius="sm"),
+                dmc.Stack(
+                    [
+                        dmc.Text(title, size="sm", fw=830, lineClamp=1),
+                        dmc.Text(caption, size="xs", c="dimmed", lineClamp=1),
+                    ],
+                    gap=0,
+                ),
+            ],
+            gap="sm",
+            wrap="nowrap",
+        ),
+        className="dashboard-index-item",
     )
 
 
@@ -714,55 +811,6 @@ def _transport_panel() -> dmc.Card:
 
 def _latency_placeholders() -> list[dmc.Skeleton]:
     return [dmc.Skeleton(h=26, radius="sm") for _ in range(4)]
-
-
-def _scenario_controls() -> dmc.Card:
-    return dmc.Card(
-        [
-            _section_header(
-                icon="tabler:adjustments-bolt",
-                title="Scenario Controls",
-                right=dmc.Badge("Scenario store", color="cyan", variant="light"),
-            ),
-            dmc.Stack(
-                [
-                    dmc.Box(id="scenario-preview-grid", className="scenario-preview-grid"),
-                    dmc.Box(id="active-scenario-impact", className="active-scenario-impact"),
-                    dmc.Button(
-                        "Heatwave simulation",
-                        id="heatwave-button",
-                        color="red",
-                        variant="light",
-                        leftSection=DashIconify(icon="tabler:temperature-sun", width=18),
-                        fullWidth=True,
-                        className="scenario-button",
-                    ),
-                    dmc.Button(
-                        "Wind ramp simulation",
-                        id="wind-button",
-                        color="green",
-                        variant="light",
-                        leftSection=DashIconify(icon="tabler:wind", width=18),
-                        fullWidth=True,
-                        className="scenario-button",
-                    ),
-                    dmc.Button(
-                        "Full system refresh",
-                        id="refresh-button",
-                        color="cyan",
-                        variant="filled",
-                        leftSection=DashIconify(icon="tabler:refresh", width=18),
-                        fullWidth=True,
-                        className="scenario-button scenario-button-primary",
-                    ),
-                ],
-                gap="xs",
-            ),
-        ],
-        withBorder=True,
-        padding="md",
-        className="panel-card",
-    )
 
 
 def _section_header(*, icon: str, title: str, right) -> dmc.Group:

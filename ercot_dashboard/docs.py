@@ -10,24 +10,23 @@ API_SUMMARY = "FastAPI orchestration layer mounted inside the Dash 4.2 demo."
 API_VERSION = "0.2.0"
 API_DESCRIPTION = """
 ERCOT Grid Pulse uses Dash with `backend="fastapi"` so the reactive dashboard,
-source APIs, scenario engine, OpenAPI schema, and Swagger console share one ASGI
+source APIs, OpenAPI schema, and Swagger console share one ASGI
 application.
 
 The routes are intentionally grouped by source system:
 
-- Operations: health, aggregate dashboard state, and source-specific refreshes
+- Operations: health, aggregate dashboard state, feed catalog, and source-specific refreshes
 - ERCOT: grid, market, public dashboard, and diagnostic endpoints
-- EIA: fuel mix and natural gas outlook endpoints
+- EIA: fuel mix plus natural gas storage, supply/consumption, and STEO outlook
 - Weather: NOAA/NWS observations and CPC degree-day outlooks
 - Events: manual operator events backed by an in-memory demo store
-- Scenarios: lightweight demand and renewable-shock transforms
 - Streams: WebSocket channel catalog for live UI transports
 """
 
 OPENAPI_TAGS = [
     {
         "name": "Operations",
-        "description": "Health checks, aggregate dashboard state, and async source bundle refreshes.",
+        "description": "Health checks, aggregate dashboard state, feed catalog, and async source bundle refreshes.",
     },
     {
         "name": "ERCOT",
@@ -60,10 +59,6 @@ OPENAPI_TAGS = [
     {
         "name": "Events",
         "description": "Manual operator events that appear in dashboard snapshots and the event feed.",
-    },
-    {
-        "name": "Scenarios",
-        "description": "Request-body driven scenario transforms over the current dashboard state.",
     },
     {
         "name": "Streams",

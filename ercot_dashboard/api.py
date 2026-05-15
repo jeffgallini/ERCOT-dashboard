@@ -5,14 +5,18 @@ import os
 from typing import Any
 
 import httpx
-from fastapi import Body, FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Path, Query, WebSocket, WebSocketDisconnect
 from fastapi.responses import RedirectResponse
 
 from ercot_dashboard.schemas import (
     DashboardSnapshot,
     DegreeDayForecastResponse,
+    EiaSnapshot,
     EiaNaturalGasResponse,
+    ErcotSnapshot,
     ErcotDebugResponse,
+    FeedCatalogResponse,
+    FeedSnapshotResponse,
     ErcotPublicDashboardsResponse,
     ErcotReportResponse,
     ErcotReportsResponse,
@@ -24,8 +28,6 @@ from ercot_dashboard.schemas import (
     OperatorEventDeleteResponse,
     OperatorEventListResponse,
     OperatorEventUpdate,
-    ScenarioInput,
-    ScenarioPreviewResponse,
     SourceBundle,
     StreamCatalogResponse,
     SupplyDemandResponse,
@@ -33,16 +35,24 @@ from ercot_dashboard.schemas import (
 from ercot_dashboard.services.clients import (
     CPC_DEFAULT_REGION,
     ERCOT_PRICE_SETTLEMENT_POINT,
+    NOAA_AIRPORT_STATIONS,
     fetch_cpc_degree_day_forecast,
+    fetch_eia_snapshot,
     fetch_eia_natural_gas,
+    fetch_eia_natural_gas_feed,
     fetch_ercot_load_zone_lmps,
     fetch_ercot_report,
+    fetch_ercot_public_dashboard_feed,
     fetch_ercot_snapshot,
     fetch_ercot_public_dashboards,
+    fetch_ercot_zone_report,
     fetch_noaa_airport_weather,
     fetch_supply_demand_dashboard,
     get_ercot_debug_status,
+    list_eia_natural_gas_feeds,
+    list_ercot_public_dashboard_feeds,
     list_ercot_reports,
+    list_ercot_zone_reports,
 )
 from ercot_dashboard.services.dashboard import (
     get_climate_source_bundle,
@@ -59,7 +69,6 @@ from ercot_dashboard.services.events import (
     list_operator_events,
     update_operator_event,
 )
-from ercot_dashboard.services.scenarios import apply_heatwave_scenario, apply_wind_ramp_scenario, preview_scenarios
 
 
 def register_api_routes(server: FastAPI) -> None:
@@ -77,10 +86,20 @@ def register_api_routes(server: FastAPI) -> None:
         return {"status": "ok", "backend": "fastapi"}
 
     @server.get(
+        "/api/feeds",
+        tags=["Operations"],
+        response_model=FeedCatalogResponse,
+        summary="List individual data-feed endpoints",
+        description="Returns the concrete API routes for each normalized external feed the demo can request.",
+    )
+    async def data_feed_catalog() -> dict[str, Any]:
+        return {"feeds": _data_feed_catalog()}
+
+    @server.get(
         "/api/dashboard",
         tags=["Operations"],
         response_model=DashboardSnapshot,
-        summary="Aggregate ERCOT, EIA, NOAA, and scenario-ready metrics",
+        summary="Aggregate ERCOT, EIA, NOAA, and public dashboard metrics",
         description="Runs the request-scope async fanout and returns the normalized dashboard state used by Dash.",
     )
     async def dashboard() -> dict[str, Any]:
@@ -148,6 +167,76 @@ def register_api_routes(server: FastAPI) -> None:
     )
     async def ercot_reports() -> dict[str, Any]:
         return {"reports": list_ercot_reports()}
+
+    @server.get(
+        "/api/ercot/grid",
+        tags=["ERCOT"],
+        response_model=ErcotSnapshot,
+        summary="Fetch normalized ERCOT grid telemetry",
+    )
+    async def ercot_grid() -> dict[str, Any]:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(12.0, connect=4.0)) as client:
+            return await fetch_ercot_snapshot(client)
+
+    @server.get(
+        "/api/ercot/system-load",
+        tags=["ERCOT"],
+        response_model=ErcotReportResponse,
+        summary="Fetch ERCOT system load report rows",
+    )
+    async def ercot_system_load(size: int = Query(default=20, ge=1, le=50)) -> dict[str, Any]:
+        return await _fetch_ercot_report_endpoint("system-load", size=size)
+
+    @server.get(
+        "/api/ercot/system-generation",
+        tags=["ERCOT"],
+        response_model=ErcotReportResponse,
+        summary="Fetch ERCOT system generation report rows",
+    )
+    async def ercot_system_generation(size: int = Query(default=20, ge=1, le=50)) -> dict[str, Any]:
+        return await _fetch_ercot_report_endpoint("system-generation", size=size)
+
+    @server.get(
+        "/api/ercot/wind-5min",
+        tags=["ERCOT"],
+        response_model=ErcotReportResponse,
+        summary="Fetch ERCOT wind actual 5-minute rows",
+    )
+    async def ercot_wind_5min(size: int = Query(default=20, ge=1, le=50)) -> dict[str, Any]:
+        return await _fetch_ercot_report_endpoint("wind-5min", size=size)
+
+    @server.get(
+        "/api/ercot/solar-5min",
+        tags=["ERCOT"],
+        response_model=ErcotReportResponse,
+        summary="Fetch ERCOT solar actual 5-minute rows",
+    )
+    async def ercot_solar_5min(size: int = Query(default=20, ge=1, le=50)) -> dict[str, Any]:
+        return await _fetch_ercot_report_endpoint("solar-5min", size=size)
+
+    @server.get(
+        "/api/ercot/load-zones/{zone_name}/load",
+        tags=["ERCOT"],
+        response_model=ErcotReportResponse,
+        summary="Fetch an ERCOT load-zone load report",
+    )
+    async def ercot_load_zone_load(
+        zone_name: str = Path(..., min_length=3, max_length=20),
+        size: int = Query(default=20, ge=1, le=50),
+    ) -> dict[str, Any]:
+        return await _fetch_ercot_zone_report_endpoint(zone_name, "load", size=size)
+
+    @server.get(
+        "/api/ercot/load-zones/{zone_name}/generation",
+        tags=["ERCOT"],
+        response_model=ErcotReportResponse,
+        summary="Fetch an ERCOT load-zone generation report",
+    )
+    async def ercot_load_zone_generation(
+        zone_name: str = Path(..., min_length=3, max_length=20),
+        size: int = Query(default=20, ge=1, le=50),
+    ) -> dict[str, Any]:
+        return await _fetch_ercot_zone_report_endpoint(zone_name, "generation", size=size)
 
     @server.get(
         "/api/ercot/debug",
@@ -268,14 +357,56 @@ def register_api_routes(server: FastAPI) -> None:
             return await fetch_ercot_public_dashboards(client)
 
     @server.get(
+        "/api/ercot/public-dashboards/{feed_name}",
+        tags=["ERCOT"],
+        response_model=FeedSnapshotResponse,
+        summary="Fetch one normalized ERCOT public dashboard feed",
+        description="Valid feed names: prc, fuel-mix, storage, combined-renewables, dc-ties, outages, ancillary.",
+    )
+    async def ercot_public_dashboard_feed(
+        feed_name: str = Path(..., min_length=2, max_length=80),
+    ) -> dict[str, Any]:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(7.5, connect=3.0)) as client:
+            try:
+                return await fetch_ercot_public_dashboard_feed(client, feed_name)
+            except ValueError as exc:
+                raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @server.get(
+        "/api/eia/fuel-mix",
+        tags=["EIA"],
+        response_model=EiaSnapshot,
+        summary="Fetch EIA ERCOT fuel mix snapshot",
+    )
+    async def eia_fuel_mix() -> dict[str, Any]:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(7.5, connect=3.0)) as client:
+            return await fetch_eia_snapshot(client)
+
+    @server.get(
         "/api/eia/natural-gas",
         tags=["EIA"],
         response_model=EiaNaturalGasResponse,
-        summary="Fetch EIA natural gas storage and STEO outlook",
+        summary="Fetch EIA natural gas storage, supply/consumption, and STEO outlook",
     )
     async def eia_natural_gas() -> dict[str, Any]:
         async with httpx.AsyncClient(timeout=httpx.Timeout(7.5, connect=3.0)) as client:
             return await fetch_eia_natural_gas(client)
+
+    @server.get(
+        "/api/eia/natural-gas/{feed_name}",
+        tags=["EIA"],
+        response_model=FeedSnapshotResponse,
+        summary="Fetch one normalized EIA natural-gas feed",
+        description="Valid feed names: storage, balance, steo.",
+    )
+    async def eia_natural_gas_feed(
+        feed_name: str = Path(..., min_length=2, max_length=80),
+    ) -> dict[str, Any]:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(7.5, connect=3.0)) as client:
+            try:
+                return await fetch_eia_natural_gas_feed(client, feed_name)
+            except ValueError as exc:
+                raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     @server.get(
         "/api/weather/airports",
@@ -286,6 +417,22 @@ def register_api_routes(server: FastAPI) -> None:
     async def airport_weather() -> dict[str, Any]:
         async with httpx.AsyncClient(timeout=httpx.Timeout(7.5, connect=3.0)) as client:
             return await fetch_noaa_airport_weather(client)
+
+    @server.get(
+        "/api/weather/airports/{airport_code}",
+        tags=["Weather"],
+        response_model=NoaaSnapshot,
+        summary="Fetch normalized NOAA/NWS observation for one Texas airport",
+    )
+    async def airport_weather_feed(
+        airport_code: str = Path(..., min_length=3, max_length=4),
+    ) -> dict[str, Any]:
+        normalized_code = airport_code.strip().upper()
+        if normalized_code not in NOAA_AIRPORT_STATIONS:
+            valid = ", ".join(NOAA_AIRPORT_STATIONS)
+            raise HTTPException(status_code=404, detail=f"Unknown airport '{airport_code}'. Valid airports: {valid}.")
+        async with httpx.AsyncClient(timeout=httpx.Timeout(7.5, connect=3.0)) as client:
+            return await fetch_noaa_airport_weather(client, airport_codes=[normalized_code])
 
     @server.get(
         "/api/weather/degree-days",
@@ -436,74 +583,170 @@ def register_api_routes(server: FastAPI) -> None:
         except WebSocketDisconnect:
             return
 
-    @server.post(
-        "/api/scenario/heatwave",
-        tags=["Scenarios"],
-        response_model=DashboardSnapshot,
-        summary="Apply a heatwave demand shock",
-    )
-    async def heatwave(
-        payload: ScenarioInput | None = Body(
-            default=None,
-            description="Optional current dashboard state. Omit the body to refresh the latest state first.",
-        ),
-    ) -> dict[str, Any]:
-        state = await _scenario_state(payload)
+
+async def _fetch_ercot_report_endpoint(
+    report_name: str,
+    *,
+    size: int,
+    start_time: str | None = None,
+    end_time: str | None = None,
+    settlement_point: str | None = None,
+) -> dict[str, Any]:
+    async with httpx.AsyncClient(timeout=httpx.Timeout(12.0, connect=4.0)) as client:
         try:
-            return apply_heatwave_scenario(state)
-        except (KeyError, TypeError, ValueError) as exc:
-            raise HTTPException(status_code=422, detail=f"Invalid scenario dashboard state: {exc}") from exc
+            return await fetch_ercot_report(
+                client,
+                report_name,
+                size=size,
+                start_time=start_time,
+                end_time=end_time,
+                settlement_point=settlement_point,
+            )
+        except ValueError as exc:
+            status_code = 404 if str(exc).startswith("Unknown ERCOT report") else 400
+            raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+        except httpx.HTTPStatusError as exc:
+            detail = exc.response.text[:500] or exc.response.reason_phrase
+            raise HTTPException(status_code=exc.response.status_code, detail=detail) from exc
 
-    @server.post(
-        "/api/scenario/wind",
-        tags=["Scenarios"],
-        response_model=DashboardSnapshot,
-        summary="Apply a wind generation ramp scenario",
-    )
-    async def wind(
-        payload: ScenarioInput | None = Body(
-            default=None,
-            description="Optional current dashboard state. Omit the body to refresh the latest state first.",
-        ),
-    ) -> dict[str, Any]:
-        state = await _scenario_state(payload)
+
+async def _fetch_ercot_zone_report_endpoint(
+    zone_name: str,
+    report_kind: str,
+    *,
+    size: int,
+) -> dict[str, Any]:
+    async with httpx.AsyncClient(timeout=httpx.Timeout(12.0, connect=4.0)) as client:
         try:
-            return apply_wind_ramp_scenario(state)
-        except (KeyError, TypeError, ValueError) as exc:
-            raise HTTPException(status_code=422, detail=f"Invalid scenario dashboard state: {exc}") from exc
+            return await fetch_ercot_zone_report(client, zone_name, report_kind, size=size)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except httpx.HTTPStatusError as exc:
+            detail = exc.response.text[:500] or exc.response.reason_phrase
+            raise HTTPException(status_code=exc.response.status_code, detail=detail) from exc
 
-    @server.post(
-        "/api/scenario/preview",
-        tags=["Scenarios"],
-        response_model=ScenarioPreviewResponse,
-        summary="Preview base, heatwave, and wind scenarios concurrently",
-        description="Uses asyncio.gather to generate scenario cards from a single dashboard state.",
+
+def _data_feed_catalog() -> list[dict[str, Any]]:
+    report_aliases = {
+        "system-load": "/api/ercot/system-load",
+        "system-generation": "/api/ercot/system-generation",
+        "wind-5min": "/api/ercot/wind-5min",
+        "solar-5min": "/api/ercot/solar-5min",
+        "hb-north-lmp": "/api/ercot/hb-north-lmp",
+        "hb-north-da-lmp": "/api/ercot/hb-north-da-lmp",
+    }
+    feeds: list[dict[str, Any]] = [
+        {
+            "name": "ercot-grid",
+            "provider": "ERCOT",
+            "title": "Normalized Grid Telemetry",
+            "local_url": "/api/ercot/grid",
+            "upstream_url": "",
+            "description": "Normalized ERCOT load, generation, wind, solar, price, and zone metrics.",
+        },
+        {
+            "name": "ercot-supply-demand",
+            "provider": "ERCOT",
+            "title": "Supply and Demand Dashboard",
+            "local_url": "/api/ercot/supply-demand",
+            "upstream_url": "",
+            "description": "Current-day and six-day supply/demand dashboard data.",
+        },
+        {
+            "name": "ercot-load-zone-lmps",
+            "provider": "ERCOT Market",
+            "title": "Load-Zone Real-Time LMPs",
+            "local_url": "/api/ercot/load-zone-lmps",
+            "upstream_url": "",
+            "description": "Latest Houston, North, South, and West load-zone LMPs.",
+        },
+    ]
+    feeds.extend(
+        {
+            "name": f"ercot-report-{report['name']}",
+            "provider": "ERCOT",
+            "title": report["title"],
+            "local_url": report_aliases.get(report["name"], report["local_url"]),
+            "upstream_url": report["ercot_url"],
+            "description": "Configured ERCOT Public API report feed.",
+        }
+        for report in list_ercot_reports()
     )
-    async def scenario_preview(
-        payload: ScenarioInput | None = Body(
-            default=None,
-            description="Optional current dashboard state. Omit the body to refresh the latest state first.",
-        ),
-    ) -> dict[str, Any]:
-        state = await _scenario_state(payload)
-        try:
-            return await preview_scenarios(state)
-        except (KeyError, TypeError, ValueError) as exc:
-            raise HTTPException(status_code=422, detail=f"Invalid scenario dashboard state: {exc}") from exc
-
-
-async def _scenario_state(payload: ScenarioInput | None) -> dict[str, Any]:
-    if payload is None:
-        return await get_dashboard_snapshot()
-
-    state = payload.model_dump(mode="python")
-    missing = [key for key in ("ercot", "noaa", "metrics") if not isinstance(state.get(key), dict)]
-    if missing:
-        raise HTTPException(
-            status_code=422,
-            detail=f"Scenario payload must be a dashboard snapshot or omitted. Missing sections: {', '.join(missing)}.",
-        )
-    return state
+    feeds.extend(
+        {
+            "name": f"ercot-zone-{report['name']}",
+            "provider": "ERCOT",
+            "title": report["title"],
+            "local_url": report["local_url"],
+            "upstream_url": report["ercot_url"],
+            "description": "Configured ERCOT load-zone report feed.",
+        }
+        for report in list_ercot_zone_reports()
+    )
+    feeds.extend(
+        {
+            "name": f"ercot-dashboard-{feed['name']}",
+            "provider": "ERCOT",
+            "title": feed["title"],
+            "local_url": feed["local_url"],
+            "upstream_url": feed["source_url"],
+            "description": feed["description"],
+        }
+        for feed in list_ercot_public_dashboard_feeds()
+    )
+    feeds.append(
+        {
+            "name": "eia-fuel-mix",
+            "provider": "EIA",
+            "title": "ERCOT Fuel Mix",
+            "local_url": "/api/eia/fuel-mix",
+            "upstream_url": "",
+            "description": "EIA API v2 ERCOT hourly fuel-type mix.",
+        }
+    )
+    feeds.extend(
+        {
+            "name": f"eia-natural-gas-{feed['name']}",
+            "provider": "EIA",
+            "title": feed["title"],
+            "local_url": feed["local_url"],
+            "upstream_url": feed["source_url"],
+            "description": feed["description"],
+        }
+        for feed in list_eia_natural_gas_feeds()
+    )
+    feeds.append(
+        {
+            "name": "noaa-airports",
+            "provider": "NOAA/NWS",
+            "title": "Texas Airport Observations",
+            "local_url": "/api/weather/airports",
+            "upstream_url": "",
+            "description": "Normalized current observations for configured Texas airport stations.",
+        }
+    )
+    feeds.extend(
+        {
+            "name": f"noaa-airport-{code.lower()}",
+            "provider": "NOAA/NWS",
+            "title": f"{station['name']} Observation",
+            "local_url": f"/api/weather/airports/{code}",
+            "upstream_url": "",
+            "description": f"Latest NWS observation for {station['station_id']}.",
+        }
+        for code, station in NOAA_AIRPORT_STATIONS.items()
+    )
+    feeds.append(
+        {
+            "name": "noaa-cpc-degree-days",
+            "provider": "NOAA CPC",
+            "title": "Degree-Day Forecast",
+            "local_url": f"/api/weather/degree-days?region={CPC_DEFAULT_REGION}",
+            "upstream_url": "",
+            "description": "Monthly heating and cooling degree-day outlook.",
+        }
+    )
+    return feeds
 
 
 def _stream_interval(

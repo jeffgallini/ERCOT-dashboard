@@ -1,1 +1,1 @@
-"""Service layer for data access, normalization, and scenarios."""
+"""Service layer for data access and normalization."""

@@ -1,11 +1,13 @@
-# ERCOT Grid Pulse
+# ERCOT Operations
 
 Demo dashboard for Dash 4.2 release-candidate FastAPI backend support.
 
 The app uses Dash with `backend="fastapi"` so the dashboard and `/api/*`
 endpoints run in one ASGI process. The service layer fans out to ERCOT, EIA,
-and NOAA concurrently, normalizes the responses, and falls back to deterministic
-demo data when credentials or public services are unavailable.
+and NOAA concurrently, normalizes the responses, and returns empty unavailable
+snapshots when credentials or public services are unavailable. The primary UI is
+organized around ERCOT's public Grid and Market Conditions dashboard set, with
+loader overlays held on figures until real rows arrive.
 
 ## Run
 
@@ -21,16 +23,28 @@ Open:
 - Dashboard: http://127.0.0.1:8050/dash/
 - FastAPI API console: http://127.0.0.1:8050/docs
 - Aggregated API: http://127.0.0.1:8050/api/dashboard
+- Feed catalog API: http://127.0.0.1:8050/api/feeds
 - ERCOT auth/debug API: http://127.0.0.1:8050/api/ercot/debug
 - ERCOT configured reports: http://127.0.0.1:8050/api/ercot/reports
+- ERCOT grid telemetry API: http://127.0.0.1:8050/api/ercot/grid
+- ERCOT system load API: http://127.0.0.1:8050/api/ercot/system-load
+- ERCOT system generation API: http://127.0.0.1:8050/api/ercot/system-generation
+- ERCOT load-zone load API: http://127.0.0.1:8050/api/ercot/load-zones/houston/load
+- ERCOT load-zone generation API: http://127.0.0.1:8050/api/ercot/load-zones/houston/generation
+- ERCOT wind actuals API: http://127.0.0.1:8050/api/ercot/wind-5min
+- ERCOT solar actuals API: http://127.0.0.1:8050/api/ercot/solar-5min
 - ERCOT HB_NORTH LMP API: http://127.0.0.1:8050/api/ercot/hb-north-lmp
 - ERCOT HB_NORTH DA LMP API: http://127.0.0.1:8050/api/ercot/hb-north-da-lmp
 - ERCOT Supply/Demand API: http://127.0.0.1:8050/api/ercot/supply-demand
 - ERCOT public dashboard replicas: http://127.0.0.1:8050/api/ercot/public-dashboards
+- ERCOT single public dashboard feed: http://127.0.0.1:8050/api/ercot/public-dashboards/prc
+- EIA fuel mix API: http://127.0.0.1:8050/api/eia/fuel-mix
 - EIA natural gas storage/STEO: http://127.0.0.1:8050/api/eia/natural-gas
+- EIA single natural gas feed: http://127.0.0.1:8050/api/eia/natural-gas/storage
 - Operator events API: http://127.0.0.1:8050/api/events
 - ERCOT websocket: ws://127.0.0.1:8050/ws/ercot?interval=30
 - Airport weather API: http://127.0.0.1:8050/api/weather/airports
+- Single airport weather API: http://127.0.0.1:8050/api/weather/airports/DFW
 - CPC degree-day forecast API: http://127.0.0.1:8050/api/weather/degree-days
 - Airport weather websocket: ws://127.0.0.1:8050/ws/weather?interval=60
 
@@ -39,9 +53,14 @@ Open:
 The `/docs` route is a customized Swagger UI served by the same FastAPI app
 that Dash mounts with `backend="fastapi"`. The OpenAPI schema uses Pydantic
 models for the normalized dashboard state, source bundles, ERCOT report rows,
-NOAA weather snapshots, EIA natural gas data, and scenario request bodies.
+NOAA weather snapshots, and EIA natural gas data.
 
-Swagger sections are grouped by demo source:
+`/api/feeds` lists every normalized external feed route. Aggregate routes remain
+available for the Dash UI, while individual feed routes expose ERCOT reports,
+ERCOT dashboard JSON feeds, EIA fuel and natural-gas subfeeds, NOAA/NWS airport
+stations, and CPC degree-day outlooks independently.
+
+Swagger sections are grouped by source:
 
 - `Operations`: health, aggregate dashboard state, and async source bundles
 - `ERCOT`: grid reports, public dashboard replicas, and diagnostics
@@ -49,7 +68,6 @@ Swagger sections are grouped by demo source:
 - `EIA`: natural gas storage and outlook data
 - `Weather`: NOAA/NWS observations and CPC degree-day outlooks
 - `Events`: in-memory manual operator events
-- `Scenarios`: heatwave, wind ramp, and concurrent preview transforms
 - `Streams`: WebSocket channel catalog for routes that OpenAPI cannot model directly
 
 ## Operator Event API
@@ -104,9 +122,10 @@ parameters. ERCOT returns both `access_token` and `id_token`; the app uses
 `ERCOT_API_SUBSCRIPTION_KEY` otherwise. You can also provide a current token
 directly with `ERCOT_API_ID_TOKEN`. EIA requires an API key. NOAA/NWS current
 observations do not require an API key, but NWS asks clients to send a
-`User-Agent`; set `NWS_USER_AGENT` to identify your local app. The demo treats all
-external APIs as unreliable by design and keeps the UI live with normalized
-fallback data.
+`User-Agent`; set `NWS_USER_AGENT` to identify your local app. The app treats all
+external APIs as unreliable by design. When a source is unavailable, FastAPI
+returns a normalized empty/unavailable payload and Dash keeps the affected
+figures under loader overlays until live data arrives.
 
 ## ERCOT Debugging
 
@@ -168,27 +187,35 @@ That feed provides 5-minute current-day demand, committed capacity, forecast
 flags, and available-capacity values, so it does not require the ERCOT Public
 Data API credentials used by the report endpoints.
 
-The ERCOT replica section also consumes public dashboard JSON feeds that do not
-require ERCOT Public Data API credentials:
+The ERCOT Grid and Market Conditions section consumes public dashboard JSON feeds
+that do not require ERCOT Public Data API credentials:
 
 - `daily-prc.json`: physical responsive capability and grid condition state
 - `fuel-mix.json`: five-minute generation mix by fuel type
 - `energy-storage-resources.json`: battery charging and discharging
+- `combine-wind-solar.json`: current-day wind and solar actuals plus hourly forecast
+- `dc-tie-flows.json`: current-day DC tie flows by interface
 - `generation-outages.json`: planned and unplanned generation outages
 - `ancillary-service-capacity-monitor.json`: ancillary service capability and awards
 
-The natural gas panel uses EIA API v2 with `EIA_API_KEY`:
+The rebuild also derives dashboard tiles for System-Wide Demand, Load-Zone
+Prices from the normalized source bundles already available to the app. EIA and
+CPC endpoints remain available for API exploration and future context panels.
 
-- Weekly storage: Lower 48 and South Central working gas in underground storage
+The natural gas API uses EIA API v2 with `EIA_API_KEY`:
+
+- Weekly storage: Lower 48 plus East, Midwest, South Central, Mountain, and Pacific underground storage
+- STEO monthly supply/consumption/inventory: total natural gas supply, U.S. consumption, and U.S. working inventory
 - STEO monthly outlook: Henry Hub spot price and South Central working inventory
 
-The climate panel parses NOAA CPC's monthly degree-day text forecast at
+Each natural-gas subfeed is also available directly at
+`/api/eia/natural-gas/{storage|balance|steo}`.
+
+The climate API parses NOAA CPC's monthly degree-day text forecast at
 `https://www.cpc.ncep.noaa.gov/pacdir/DDdir/ddforecast.txt`. The default API
 region is the Texas-only block, `TEXAS`. Use
 `/api/weather/degree-days?region=TEXAS` to request it directly, or pass another
-CPC region or state header from the text file. The dashboard plots monthly mean
-HDD upward, monthly mean CDD downward, and a net climate position line calculated as
-`HDD mean - CDD mean`.
+CPC region or state header from the text file.
 
 NOAA/NWS station observations are current weather observations, not a native
 sub-second push feed. The app streams a normalized airport weather snapshot over
@@ -197,10 +224,13 @@ KIAH, KAUS, KLBB, KSAT, and KELP, then sending a fresh JSON payload on each
 interval. NWS notes that observations can lag by about 20 minutes while upstream
 MADIS data is quality-controlled.
 
+Use `/api/weather/airports/{DFW|IAH|AUS|LBB|SAT|ELP}` for a single airport
+station snapshot.
+
 ## Architecture
 
 - `ercot_dashboard.app`: Dash app factory and FastAPI app exposure.
-- `ercot_dashboard.api`: `/api/dashboard`, `/api/events`, `/api/ercot/*`, `/api/eia/natural-gas`, `/api/weather/*`, `/ws/ercot`, `/ws/weather`, and scenario routes.
-- `ercot_dashboard.services`: async external clients, normalization, and scenario transforms.
+- `ercot_dashboard.api`: `/api/dashboard`, `/api/feeds`, `/api/events`, `/api/ercot/*`, `/api/eia/*`, `/api/weather/*`, `/ws/ercot`, and `/ws/weather`.
+- `ercot_dashboard.services`: async external clients and normalization.
 - `ercot_dashboard.layout`: dash-mantine-components layout.
 - `ercot_dashboard.callbacks`: async Dash callbacks that call FastAPI endpoints through ASGI.

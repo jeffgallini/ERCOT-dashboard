@@ -1,9 +1,6 @@
 from __future__ import annotations
 
-import asyncio
-
-from ercot_dashboard.callbacks import _apply_scenario_command, _map_price_event_records, _merge_event_log
-from ercot_dashboard.services.dashboard import get_dashboard_snapshot
+from ercot_dashboard.callbacks import _map_price_event_records, _merge_event_log
 
 
 def test_map_price_events_capture_missing_south_lmp_and_dedupe() -> None:
@@ -28,15 +25,3 @@ def test_map_price_events_capture_missing_south_lmp_and_dedupe() -> None:
     assert records[0]["level"] == "danger"
     assert len(second_log) == 1
     assert second_log[0]["count"] == 2
-
-
-def test_scenario_command_reapplies_transform_to_composed_snapshot() -> None:
-    snapshot = asyncio.run(get_dashboard_snapshot(use_live=False))
-
-    heatwave = _apply_scenario_command(snapshot, {"kind": "heatwave"})
-    wind = _apply_scenario_command(snapshot, {"kind": "wind"})
-
-    assert heatwave["active_scenario"]["label"] == "Heatwave Simulation"
-    assert heatwave["ercot"]["load_mw"] > snapshot["ercot"]["load_mw"]
-    assert wind["active_scenario"]["label"] == "Wind Ramp Simulation"
-    assert wind["ercot"]["wind_mw"] > snapshot["ercot"]["wind_mw"]

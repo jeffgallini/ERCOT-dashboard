@@ -20,6 +20,14 @@ from ercot_dashboard.services.clients import (
     demo_ercot_public_dashboards,
     demo_noaa_snapshot,
     demo_supply_demand_snapshot,
+    empty_cpc_degree_day_forecast,
+    empty_eia_snapshot,
+    empty_eia_natural_gas,
+    empty_ercot_snapshot,
+    empty_ercot_public_dashboards,
+    empty_load_zone_lmps,
+    empty_noaa_snapshot,
+    empty_supply_demand_snapshot,
     fetch_cpc_degree_day_forecast,
     fetch_eia_snapshot,
     fetch_eia_natural_gas,
@@ -50,6 +58,8 @@ SOURCE_GROUPS = (
     "climate",
     "market",
 )
+DISPATCHABLE_FUELS = {"Natural Gas", "Coal and Lignite", "Nuclear", "Hydro", "Other"}
+VARIABLE_RENEWABLE_FUELS = {"Wind", "Solar"}
 _source_bundle_cache: dict[str, dict[str, Any]] = {}
 _source_bundle_cache_expires_at: dict[str, datetime] = {}
 _source_bundle_locks: dict[str, asyncio.Lock] = {}
@@ -71,13 +81,13 @@ async def get_dashboard_snapshot(*, use_live: bool = True) -> dict[str, Any]:
             fanout_duration_ms = round((time.perf_counter() - fanout_started) * 1000, 1)
             results = {name: result for name, result, _duration in timed_results}
             source_latency_ms = {name: duration for name, _result, duration in timed_results}
-            ercot = _snapshot_or_demo(results["ercot"], demo_ercot_snapshot)
-            eia = _snapshot_or_demo(results["eia"], demo_eia_snapshot)
-            noaa = _snapshot_or_demo(results["noaa"], demo_noaa_snapshot)
-            supply_demand = _snapshot_or_demo(results["supply_demand"], demo_supply_demand_snapshot)
-            ercot_dashboards = _snapshot_or_demo(results["ercot_dashboards"], demo_ercot_public_dashboards)
-            eia_gas = _snapshot_or_demo(results["eia_gas"], demo_eia_natural_gas)
-            climate = _snapshot_or_demo(results["cpc"], demo_cpc_degree_day_forecast)
+            ercot = _snapshot_or_empty(results["ercot"], empty_ercot_snapshot)
+            eia = _snapshot_or_empty(results["eia"], empty_eia_snapshot)
+            noaa = _snapshot_or_empty(results["noaa"], empty_noaa_snapshot)
+            supply_demand = _snapshot_or_empty(results["supply_demand"], empty_supply_demand_snapshot)
+            ercot_dashboards = _snapshot_or_empty(results["ercot_dashboards"], empty_ercot_public_dashboards)
+            eia_gas = _snapshot_or_empty(results["eia_gas"], empty_eia_natural_gas)
+            climate = _snapshot_or_empty(results["cpc"], empty_cpc_degree_day_forecast)
     else:
         sources = demo_dashboard_sources()
         ercot = sources["ercot"]
@@ -123,7 +133,14 @@ def compose_dashboard_snapshot(
     ercot = _align_ercot_with_supply_demand(ercot, supply_demand)
     metrics = _compute_metrics(ercot, noaa)
     timestamp = utc_now().astimezone(timezone.utc).isoformat()
-    status = _system_status(metrics["stress_index"])
+    status = _system_status(metrics["stress_index"]) if _has_grid_measurements(ercot) else "Waiting for data"
+    diagnostics = _build_system_diagnostics(
+        ercot=ercot,
+        supply_demand=supply_demand,
+        ercot_dashboards=ercot_dashboards,
+        metrics=metrics,
+        system_status=status,
+    )
 
     source_status = {
         "ercot": ercot["status"],
@@ -146,9 +163,14 @@ def compose_dashboard_snapshot(
         "ercot_dashboards": ercot_dashboards,
         "eia_gas": eia_gas,
         "climate": climate,
+        "diagnostics": diagnostics,
         "metrics": metrics,
         "trends": _build_kpi_trends(ercot, noaa, metrics, supply_demand),
-        "events": [*list_operator_events(limit=10), *_build_events(ercot, eia, noaa, metrics, status, fanout)],
+        "events": [
+            *list_operator_events(limit=10),
+            *_build_events(ercot, eia, noaa, metrics, status, fanout),
+            *diagnostics.get("signals", []),
+        ],
         "fanout": fanout,
         "source_status": source_status,
     }
@@ -176,6 +198,18 @@ def demo_dashboard_sources(*, status_message: str = "") -> dict[str, dict[str, A
     return sources
 
 
+def empty_dashboard_sources(*, status_message: str = "Waiting for source-specific async refresh.") -> dict[str, dict[str, Any]]:
+    return {
+        "ercot": empty_ercot_snapshot(status_message),
+        "eia": empty_eia_snapshot(status_message),
+        "noaa": empty_noaa_snapshot(status_message),
+        "supply_demand": empty_supply_demand_snapshot(status_message),
+        "ercot_dashboards": empty_ercot_public_dashboards(status_message),
+        "eia_gas": empty_eia_natural_gas(status_message),
+        "climate": empty_cpc_degree_day_forecast(status_message),
+    }
+
+
 def compose_dashboard_from_source_bundles(
     *,
     grid: dict[str, Any] | None = None,
@@ -185,7 +219,7 @@ def compose_dashboard_from_source_bundles(
     climate: dict[str, Any] | None = None,
     market: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    defaults = demo_dashboard_sources(status_message="Waiting for source-specific async refresh.")
+    defaults = empty_dashboard_sources(status_message="Waiting for source-specific async refresh.")
     bundles = {
         "grid": grid,
         "ercot_dashboards": ercot_dashboards,
@@ -268,8 +302,8 @@ async def get_grid_source_bundle() -> dict[str, Any]:
             return await _source_bundle(
                 "grid",
                 {
-                    "ercot": (fetch_ercot_snapshot(client), demo_ercot_snapshot),
-                    "supply_demand": (fetch_supply_demand_dashboard(client), demo_supply_demand_snapshot),
+                    "ercot": (fetch_ercot_snapshot(client), empty_ercot_snapshot),
+                    "supply_demand": (fetch_supply_demand_dashboard(client), empty_supply_demand_snapshot),
                 },
             )
 
@@ -282,7 +316,7 @@ async def get_ercot_dashboards_source_bundle() -> dict[str, Any]:
             return await _source_bundle(
                 "ercot_dashboards",
                 {
-                    "ercot_dashboards": (fetch_ercot_public_dashboards(client), demo_ercot_public_dashboards),
+                    "ercot_dashboards": (fetch_ercot_public_dashboards(client), empty_ercot_public_dashboards),
                 },
             )
 
@@ -294,7 +328,7 @@ async def get_weather_source_bundle() -> dict[str, Any]:
         async with httpx.AsyncClient(timeout=httpx.Timeout(7.5, connect=3.0)) as client:
             return await _source_bundle(
                 "weather",
-                {"noaa": (fetch_noaa_snapshot(client), demo_noaa_snapshot)},
+                {"noaa": (fetch_noaa_snapshot(client), empty_noaa_snapshot)},
             )
 
     return await _source_bundle_with_cache("weather", refresh)
@@ -306,8 +340,8 @@ async def get_energy_source_bundle() -> dict[str, Any]:
             return await _source_bundle(
                 "energy",
                 {
-                    "eia": (fetch_eia_snapshot(client), demo_eia_snapshot),
-                    "eia_gas": (fetch_eia_natural_gas(client), demo_eia_natural_gas),
+                    "eia": (fetch_eia_snapshot(client), empty_eia_snapshot),
+                    "eia_gas": (fetch_eia_natural_gas(client), empty_eia_natural_gas),
                 },
             )
 
@@ -319,7 +353,7 @@ async def get_market_source_bundle() -> dict[str, Any]:
         async with httpx.AsyncClient(timeout=httpx.Timeout(12.0, connect=4.0)) as client:
             return await _source_bundle(
                 "market",
-                {"load_zone_lmps": (fetch_ercot_load_zone_lmps(client), demo_load_zone_lmps)},
+                {"load_zone_lmps": (fetch_ercot_load_zone_lmps(client), empty_load_zone_lmps)},
             )
 
     return await _source_bundle_with_cache("market", refresh)
@@ -330,7 +364,7 @@ async def get_climate_source_bundle() -> dict[str, Any]:
         async with httpx.AsyncClient(timeout=httpx.Timeout(7.5, connect=3.0)) as client:
             return await _source_bundle(
                 "climate",
-                {"climate": (fetch_cpc_degree_day_forecast(client), demo_cpc_degree_day_forecast)},
+                {"climate": (fetch_cpc_degree_day_forecast(client), empty_cpc_degree_day_forecast)},
             )
 
     return await _source_bundle_with_cache("climate", refresh)
@@ -391,7 +425,7 @@ async def _source_bundle(
     )
     results = {source_name: result for source_name, result, _duration in timed_results}
     data = {
-        source_name: _snapshot_or_demo(results[source_name], fallback_factory)
+        source_name: _snapshot_or_empty(results[source_name], fallback_factory)
         for source_name, (_awaitable, fallback_factory) in requests.items()
     }
     latency = {source_name: duration for source_name, _result, duration in timed_results}
@@ -412,12 +446,14 @@ def _aggregate_source_status(data: dict[str, dict[str, Any]]) -> dict[str, str]:
     states = [str(snapshot.get("status", {}).get("state") or "unknown") for snapshot in data.values()]
     if all(state == "live" for state in states):
         state = "live"
-    elif any(state in {"unavailable", "unknown"} for state in states):
+    elif any(state == "partial" for state in states):
         state = "partial"
-    elif any(state == "demo" for state in states):
-        state = "demo"
-    elif any(state == "stale" for state in states):
+    elif any(state in {"stale"} for state in states):
         state = "stale"
+    elif any(state in {"unavailable", "unknown"} for state in states):
+        state = "unavailable"
+    elif any(state == "waiting" for state in states):
+        state = "waiting"
     else:
         state = "partial"
     messages = [
@@ -433,7 +469,7 @@ def _refresh_policy(status: dict[str, str]) -> dict[str, Any]:
     backoff_seconds = 0
     if state in {"unavailable", "unknown"}:
         backoff_seconds = 120
-    elif state in {"demo", "partial", "stale"}:
+    elif state in {"partial", "stale"}:
         backoff_seconds = 60
 
     retry_after = ""
@@ -443,33 +479,6 @@ def _refresh_policy(status: dict[str, str]) -> dict[str, Any]:
     return {
         "backoff_seconds": backoff_seconds,
         "retry_after": retry_after,
-    }
-
-
-def demo_load_zone_lmps() -> dict[str, Any]:
-    zones = []
-    for zone in demo_ercot_snapshot().get("load_zones", []):
-        zones.append(
-            {
-                "name": zone.get("name", ""),
-                "settlement_point": zone.get("settlement_point", ""),
-                "price_usd_mwh": zone.get("price_usd_mwh"),
-                "timestamp": utc_now().isoformat(),
-                "status": "demo",
-                "diagnostic": {
-                    "raw_row_count": 0,
-                    "matched_row_count": 0,
-                    "sample_settlement_points": [],
-                    "query": {},
-                    "message": "Demo load-zone LMP value.",
-                },
-            }
-        )
-    return {
-        "timestamp": utc_now().isoformat(),
-        "complete": False,
-        "status": _status("ERCOT Load Zone RT LMP", "demo", "Using demo load-zone LMP values."),
-        "zones": zones,
     }
 
 
@@ -498,21 +507,19 @@ async def _timed_source(name: str, awaitable: Any) -> tuple[str, dict[str, Any] 
     return name, result, duration_ms
 
 
-def _snapshot_or_demo(
+def _snapshot_or_empty(
     result: dict[str, Any] | BaseException,
     fallback_factory: Callable[[], dict[str, Any]],
 ) -> dict[str, Any]:
     if isinstance(result, BaseException) and not isinstance(result, Exception):
         raise result
     if not isinstance(result, Exception):
+        status = result.get("status") if isinstance(result, dict) else {}
+        if isinstance(status, dict) and status.get("state") == "demo":
+            return fallback_factory("Demo data is disabled for this dashboard.", state="unavailable")
         return result
 
-    snapshot = fallback_factory()
-    status = dict(snapshot.get("status") or {})
-    status["state"] = "demo"
-    status["message"] = f"Using demo data: {type(result).__name__} while refreshing source."
-    snapshot["status"] = status
-    return snapshot
+    return fallback_factory(f"{type(result).__name__} while refreshing source.", state="unavailable")
 
 
 def _align_ercot_with_supply_demand(
@@ -576,6 +583,12 @@ def _scale_regions_to_load(
 def _compute_metrics(ercot: dict[str, Any], noaa: dict[str, Any]) -> dict[str, float]:
     load = float(ercot["load_mw"])
     generation = float(ercot["generation_mw"])
+    if load <= 0 or generation <= 0:
+        return {
+            "stress_index": 0.0,
+            "balance_mw": 0.0,
+            "renewable_share_pct": 0.0,
+        }
     temp = float(noaa["temperature_f"])
     reserve_margin = float(ercot["reserve_margin_pct"])
     price_state = (ercot.get("price_status") or ercot.get("status", {})).get("state")
@@ -606,36 +619,57 @@ def _system_status(stress_index: float) -> str:
     return "Normal"
 
 
+def _has_grid_measurements(ercot: dict[str, Any]) -> bool:
+    status = ercot.get("status") if isinstance(ercot.get("status"), dict) else {}
+    return (
+        status.get("state") in {"live", "partial", "stale"}
+        and isinstance(ercot.get("load_mw"), int | float)
+        and isinstance(ercot.get("generation_mw"), int | float)
+        and float(ercot.get("load_mw") or 0) > 0
+        and float(ercot.get("generation_mw") or 0) > 0
+    )
+
+
 def _build_kpi_trends(
     ercot: dict[str, Any],
     noaa: dict[str, Any],
     metrics: dict[str, float],
     supply_demand: dict[str, Any],
 ) -> dict[str, list[dict[str, Any]]]:
+    if (
+        not isinstance(ercot.get("load_mw"), int | float)
+        or not isinstance(ercot.get("generation_mw"), int | float)
+        or float(ercot.get("load_mw") or 0) <= 0
+        or float(ercot.get("generation_mw") or 0) <= 0
+    ):
+        return {
+            "load_mw": [],
+            "generation_mw": [],
+            "price_proxy": [],
+            "wind_mw": [],
+            "solar_mw": [],
+            "net_load_mw": [],
+            "stress_index": [],
+        }
+
     load_actual = _supply_actual_series(supply_demand, "demand_mw")
     load_forecast = _supply_forecast_series(supply_demand, "demand_mw")
     generation_series = _supply_actual_series(supply_demand, "committed_capacity_mw")
     ercot_trends = ercot.get("trends", {})
-    wind_actual = ercot_trends.get("wind_mw") or _fallback_series(float(ercot["wind_mw"]), spread=0.18)
-    solar_actual = ercot_trends.get("solar_mw") or _fallback_series(float(ercot["solar_mw"]), spread=0.35, floor=0)
+    wind_actual = ercot_trends.get("wind_mw") or []
+    solar_actual = ercot_trends.get("solar_mw") or []
 
     trends = {
         "load_mw": _with_forecast(
-            load_actual or ercot_trends.get("load_mw") or _fallback_series(float(ercot["load_mw"])),
+            load_actual or ercot_trends.get("load_mw") or [],
             load_forecast,
         ),
         "generation_mw": generation_series
         or ercot_trends.get("generation_mw")
-        or _fallback_series(float(ercot["generation_mw"])),
-        "price_proxy": ercot_trends.get("price_proxy") or _optional_price_series(ercot.get("price_proxy")),
-        "wind_mw": _with_forecast(
-            wind_actual,
-            _renewable_hourly_forecast(wind_actual, float(ercot["wind_mw"]), kind="wind"),
-        ),
-        "solar_mw": _with_forecast(
-            solar_actual,
-            _renewable_hourly_forecast(solar_actual, float(ercot["solar_mw"]), kind="solar"),
-        ),
+        or [],
+        "price_proxy": ercot_trends.get("price_proxy") or [],
+        "wind_mw": wind_actual,
+        "solar_mw": solar_actual,
     }
     trends["net_load_mw"] = _net_load_trend(trends["load_mw"], trends["wind_mw"], trends["solar_mw"], ercot)
     trends["stress_index"] = _stress_trend(
@@ -789,7 +823,7 @@ def _stress_trend(
     metrics: dict[str, float],
 ) -> list[dict[str, Any]]:
     if not load_series:
-        return _fallback_series(float(metrics["stress_index"]), spread=0.1, floor=0, ceiling=100)
+        return []
 
     generation_by_time = {point["timestamp"]: point["value"] for point in generation_series}
     fallback_generation = float(ercot["generation_mw"])
@@ -959,6 +993,385 @@ def _fallback_series(
     return series
 
 
+def _build_system_diagnostics(
+    *,
+    ercot: dict[str, Any],
+    supply_demand: dict[str, Any],
+    ercot_dashboards: dict[str, Any],
+    metrics: dict[str, float],
+    system_status: str,
+) -> dict[str, Any]:
+    fuel_rows = _fuel_availability_rows(ercot_dashboards.get("fuel_mix", {}))
+    outage = _outage_diagnostics(ercot_dashboards.get("outages", {}))
+    ancillary = _ancillary_diagnostics(ercot_dashboards.get("ancillary", {}))
+    renewables = _renewable_forecast_diagnostics(ercot_dashboards.get("combined_renewables", {}))
+    fuel_gap = _largest_dispatchable_fuel_gap(fuel_rows)
+    grid_available = _has_grid_measurements(ercot)
+    summary = {
+        "system_status": system_status,
+        "stress_index": metrics.get("stress_index", 0.0),
+        "reserve_margin_pct": ercot.get("reserve_margin_pct"),
+        "price_usd_mwh": ercot.get("price_proxy"),
+        "dispatchable_outages_mw": outage.get("dispatchable_mw"),
+        "renewable_outages_mw": outage.get("renewable_mw"),
+        "forced_outages_mw": outage.get("unplanned_mw"),
+        "total_outages_mw": outage.get("total_mw"),
+        "prc_mw": ancillary.get("prc_mw"),
+        "online_reserve_mw": ancillary.get("online_reserve_mw"),
+        "as_shortage_mw": ancillary.get("total_shortage_mw"),
+        "renewable_forecast_delta_mw": renewables.get("combined_delta_mw"),
+        "largest_fuel_gap_fuel": fuel_gap.get("fuel", "") if fuel_gap else "",
+        "largest_fuel_gap_mw": fuel_gap.get("unavailable_mw") if fuel_gap else None,
+        "minimum_margin_pct": (supply_demand.get("summary") or {}).get("minimum_margin_pct"),
+    }
+    signals = _diagnostic_signals(
+        fuel_gap=fuel_gap,
+        outage=outage,
+        ancillary=ancillary,
+        renewables=renewables,
+        ercot=ercot,
+        metrics=metrics,
+        grid_available=grid_available,
+    )
+    status = _status(
+        "System Diagnostics",
+        "live" if signals or _has_diagnostic_measurements(fuel_rows, outage, ancillary, renewables, grid_available) else "waiting",
+        "Real-time diagnostics are derived from ERCOT public dashboard feeds.",
+    )
+    return {
+        "timestamp": utc_now().astimezone(timezone.utc).isoformat(),
+        "status": status,
+        "summary": summary,
+        "fuels": fuel_rows,
+        "outages": outage,
+        "ancillary": ancillary,
+        "renewables": renewables,
+        "signals": signals[:8],
+    }
+
+
+def _fuel_availability_rows(fuel_mix: dict[str, Any]) -> list[dict[str, Any]]:
+    latest_mix = ((fuel_mix or {}).get("latest") or {}).get("mix") or []
+    rows = []
+    for item in latest_mix:
+        if not isinstance(item, dict):
+            continue
+        fuel = str(item.get("fuel") or "").strip()
+        if not fuel:
+            continue
+        generation = _number_or_none(item.get("generation_mw"))
+        hsl = _number_or_none(item.get("hsl_mw"))
+        capacity = _number_or_none(item.get("capacity_mw"))
+        unavailable = _number_or_none(item.get("unavailable_mw"))
+        if unavailable is None and hsl is not None and capacity is not None:
+            unavailable = max(capacity - hsl, 0)
+        headroom = _number_or_none(item.get("headroom_mw"))
+        if headroom is None and generation is not None and hsl is not None:
+            headroom = max(hsl - generation, 0)
+
+        rows.append(
+            {
+                "fuel": fuel,
+                "class": _fuel_class(fuel),
+                "generation_mw": _rounded(generation),
+                "hsl_mw": _rounded(hsl),
+                "capacity_mw": _rounded(capacity),
+                "unavailable_mw": _rounded(unavailable),
+                "headroom_mw": _rounded(headroom),
+                "share_pct": _rounded(_number_or_none(item.get("share_pct"))),
+                "availability_pct": _availability_pct(hsl, capacity),
+                "utilization_pct": _utilization_pct(generation, hsl),
+            }
+        )
+
+    rows.sort(
+        key=lambda row: (
+            str(row.get("class")) != "dispatchable",
+            -float(row.get("unavailable_mw") or 0),
+            str(row.get("fuel") or ""),
+        )
+    )
+    return rows
+
+
+def _fuel_class(fuel: str) -> str:
+    if fuel in DISPATCHABLE_FUELS:
+        return "dispatchable"
+    if fuel in VARIABLE_RENEWABLE_FUELS:
+        return "variable renewable"
+    if fuel == "Power Storage":
+        return "storage"
+    return "other"
+
+
+def _availability_pct(hsl: float | None, capacity: float | None) -> float | None:
+    if hsl is None or capacity is None or capacity <= 0:
+        return None
+    return round((hsl / capacity) * 100, 1)
+
+
+def _utilization_pct(generation: float | None, hsl: float | None) -> float | None:
+    if generation is None or hsl is None or hsl <= 0:
+        return None
+    return round((generation / hsl) * 100, 1)
+
+
+def _largest_dispatchable_fuel_gap(fuel_rows: list[dict[str, Any]]) -> dict[str, Any] | None:
+    candidates = [
+        row
+        for row in fuel_rows
+        if row.get("class") == "dispatchable" and isinstance(row.get("unavailable_mw"), int | float)
+    ]
+    return max(candidates, key=lambda row: float(row.get("unavailable_mw") or 0), default=None)
+
+
+def _has_diagnostic_measurements(
+    fuel_rows: list[dict[str, Any]],
+    outage: dict[str, Any],
+    ancillary: dict[str, Any],
+    renewables: dict[str, Any],
+    grid_available: bool,
+) -> bool:
+    return bool(
+        grid_available
+        or fuel_rows
+        or any(_number_or_none(outage.get(key)) is not None for key in ("total_mw", "dispatchable_mw", "renewable_mw"))
+        or any(_number_or_none(ancillary.get(key)) is not None for key in ("prc_mw", "online_reserve_mw"))
+        or _number_or_none(renewables.get("combined_actual_mw")) is not None
+    )
+
+
+def _outage_diagnostics(outages: dict[str, Any]) -> dict[str, Any]:
+    latest = (outages or {}).get("latest") or {}
+    return {
+        "timestamp": latest.get("timestamp") or (outages or {}).get("last_updated", ""),
+        "planned_mw": _rounded(_number_or_none(latest.get("planned_mw"))),
+        "unplanned_mw": _rounded(_number_or_none(latest.get("unplanned_mw"))),
+        "total_mw": _rounded(_number_or_none(latest.get("total_mw"))),
+        "dispatchable_mw": _rounded(_number_or_none(latest.get("dispatchable_mw"))),
+        "renewable_mw": _rounded(_number_or_none(latest.get("renewable_mw"))),
+        "source_url": (outages or {}).get("source_url", ""),
+    }
+
+
+def _ancillary_diagnostics(ancillary: dict[str, Any]) -> dict[str, Any]:
+    products = []
+    total_shortage = 0.0
+    for product in (ancillary or {}).get("products", []) or []:
+        if not isinstance(product, dict):
+            continue
+        capability = _number_or_none(product.get("capability_mw"))
+        awards = _number_or_none(product.get("awards_mw"))
+        shortage = max((awards or 0) - (capability or 0), 0) if awards is not None and capability is not None else 0
+        total_shortage += shortage
+        products.append(
+            {
+                "name": str(product.get("name") or "Ancillary service"),
+                "capability_mw": _rounded(capability),
+                "awards_mw": _rounded(awards),
+                "shortage_mw": _rounded(shortage),
+                "coverage_pct": _availability_pct(capability, awards) if awards else None,
+            }
+        )
+
+    system = (ancillary or {}).get("system") or {}
+    return {
+        "timestamp": (ancillary or {}).get("last_updated", ""),
+        "interval": (ancillary or {}).get("interval", ""),
+        "prc_mw": _rounded(_number_or_none(system.get("prc_mw"))),
+        "online_reserve_mw": _rounded(_number_or_none(system.get("online_reserve_mw"))),
+        "online_offline_reserve_mw": _rounded(_number_or_none(system.get("online_offline_reserve_mw"))),
+        "total_shortage_mw": _rounded(total_shortage),
+        "products": products,
+        "source_url": (ancillary or {}).get("source_url", ""),
+    }
+
+
+def _renewable_forecast_diagnostics(combined_renewables: dict[str, Any]) -> dict[str, Any]:
+    latest = (combined_renewables or {}).get("latest_actual") or {}
+    if not latest:
+        actual_points = [
+            point
+            for point in (combined_renewables or {}).get("current_day", []) or []
+            if isinstance(point, dict) and _number_or_none(point.get("combined_actual_mw")) is not None
+        ]
+        latest = actual_points[-1] if actual_points else {}
+
+    actual = _number_or_none(latest.get("combined_actual_mw"))
+    forecast = _number_or_none(latest.get("combined_forecast_mw"))
+    wind_actual = _number_or_none(latest.get("wind_actual_mw"))
+    wind_forecast = _number_or_none(latest.get("wind_forecast_mw"))
+    solar_actual = _number_or_none(latest.get("solar_actual_mw"))
+    solar_forecast = _number_or_none(latest.get("solar_forecast_mw"))
+    return {
+        "timestamp": latest.get("timestamp", ""),
+        "combined_actual_mw": _rounded(actual),
+        "combined_forecast_mw": _rounded(forecast),
+        "combined_delta_mw": _rounded(actual - forecast) if actual is not None and forecast is not None else None,
+        "wind_delta_mw": _rounded(wind_actual - wind_forecast)
+        if wind_actual is not None and wind_forecast is not None
+        else None,
+        "solar_delta_mw": _rounded(solar_actual - solar_forecast)
+        if solar_actual is not None and solar_forecast is not None
+        else None,
+        "source_url": (combined_renewables or {}).get("source_url", ""),
+    }
+
+
+def _diagnostic_signals(
+    *,
+    fuel_gap: dict[str, Any] | None,
+    outage: dict[str, Any],
+    ancillary: dict[str, Any],
+    renewables: dict[str, Any],
+    ercot: dict[str, Any],
+    metrics: dict[str, float],
+    grid_available: bool,
+) -> list[dict[str, Any]]:
+    event_time = utc_now().strftime("%H:%M:%S UTC")
+    signals: list[dict[str, Any]] = []
+
+    if fuel_gap and isinstance(fuel_gap.get("unavailable_mw"), int | float):
+        gap = float(fuel_gap["unavailable_mw"])
+        level = _high_signal_level(gap, warning=3_000, danger=8_000, success_below=1_500)
+        title = f"{fuel_gap['fuel']} availability proxy"
+        message = (
+            f"{_mw(gap)} unavailable from seasonal capacity vs HSL; "
+            f"generation {_mw(fuel_gap.get('generation_mw'))}, headroom {_mw(fuel_gap.get('headroom_mw'))}."
+        )
+        signals.append(_diagnostic_event(level, title, message, "ERCOT Fuel Mix", event_time))
+
+    dispatchable = _number_or_none(outage.get("dispatchable_mw"))
+    renewable = _number_or_none(outage.get("renewable_mw"))
+    unplanned = _number_or_none(outage.get("unplanned_mw"))
+    if any(value is not None and value > 0 for value in (dispatchable, renewable, unplanned)):
+        outage_pressure = max(dispatchable or 0, unplanned or 0)
+        level = _high_signal_level(outage_pressure, warning=12_000, danger=22_000, success_below=4_000)
+        message = (
+            f"Generation outage dashboard shows {_mw(dispatchable)} dispatchable, "
+            f"{_mw(renewable)} renewable, and {_mw(unplanned)} forced/unplanned outage signal."
+        )
+        signals.append(_diagnostic_event(level, "Current outage mix", message, "ERCOT Generation Outages", event_time))
+
+    prc = _number_or_none(ancillary.get("prc_mw"))
+    reserve_margin = _number_or_none(ercot.get("reserve_margin_pct"))
+    if prc is not None and prc > 0:
+        level = "danger" if prc < 3_000 else "warning" if prc < 5_000 else "success"
+        message = f"Physical responsive capability is {_mw(prc)}; reserve margin is {_pct(reserve_margin)}."
+        signals.append(_diagnostic_event(level, "Reserve cushion", message, "ERCOT Ancillary Services", event_time))
+    elif grid_available and reserve_margin is not None:
+        level = "danger" if reserve_margin < 8 else "warning" if reserve_margin < 14 else "success"
+        signals.append(
+            _diagnostic_event(
+                level,
+                "Reserve margin",
+                f"Dashboard reserve margin proxy is {_pct(reserve_margin)}.",
+                "ERCOT Supply/Demand",
+                event_time,
+            )
+        )
+
+    shortage = _number_or_none(ancillary.get("total_shortage_mw"))
+    if shortage is not None and shortage > 25:
+        worst = max(
+            ancillary.get("products", []),
+            key=lambda product: float(product.get("shortage_mw") or 0),
+            default={},
+        )
+        level = _high_signal_level(shortage, warning=100, danger=500)
+        message = (
+            f"AS awards exceed displayed capability by {_mw(shortage)}; "
+            f"largest gap is {worst.get('name', 'an AS product')} at {_mw(worst.get('shortage_mw'))}."
+        )
+        signals.append(_diagnostic_event(level, "Ancillary service coverage", message, "ERCOT Ancillary Services", event_time))
+
+    renewable_delta = _number_or_none(renewables.get("combined_delta_mw"))
+    if renewable_delta is not None and abs(renewable_delta) >= 500:
+        level = "danger" if renewable_delta <= -3_000 else "warning" if renewable_delta < -1_000 else "success"
+        direction = "under forecast" if renewable_delta < 0 else "above forecast"
+        message = (
+            f"Combined wind and solar are {_mw(abs(renewable_delta))} {direction}; "
+            f"wind delta {_mw(renewables.get('wind_delta_mw'))}, solar delta {_mw(renewables.get('solar_delta_mw'))}."
+        )
+        signals.append(_diagnostic_event(level, "Renewable forecast miss", message, "ERCOT Wind/Solar", event_time))
+
+    price = _number_or_none(ercot.get("price_proxy"))
+    if grid_available and price is not None and price >= 45:
+        level = "danger" if price >= 250 else "warning" if price >= 100 else "info"
+        label = ercot.get("price_label") or ercot.get("price_settlement_point") or "ERCOT RT LMP"
+        message = f"{label} is ${price:,.2f}/MWh with stress index {metrics.get('stress_index', 0):.1f}."
+        signals.append(_diagnostic_event(level, "Real-time price pressure", message, "ERCOT Market", event_time))
+
+    if not signals and grid_available:
+        signals.append(
+            _diagnostic_event(
+                "success",
+                "Diagnostics nominal",
+                "Fuel, reserve, outage, renewable, and price signals are inside demo thresholds.",
+                "System Diagnostics",
+                event_time,
+            )
+        )
+    return signals
+
+
+def _diagnostic_event(
+    level: str,
+    title: str,
+    message: str,
+    source: str,
+    event_time: str,
+) -> dict[str, Any]:
+    return {
+        "time": event_time,
+        "level": level if level in {"danger", "warning", "success", "info"} else "info",
+        "title": title,
+        "message": message,
+        "source": source,
+    }
+
+
+def _high_signal_level(
+    value: float,
+    *,
+    warning: float,
+    danger: float,
+    success_below: float | None = None,
+) -> str:
+    if value >= danger:
+        return "danger"
+    if value >= warning:
+        return "warning"
+    if success_below is not None and value <= success_below:
+        return "success"
+    return "info"
+
+
+def _number_or_none(value: Any) -> float | None:
+    if isinstance(value, int | float):
+        return float(value)
+    if value is None:
+        return None
+    try:
+        return float(str(value).replace(",", ""))
+    except ValueError:
+        return None
+
+
+def _rounded(value: float | None, *, ndigits: int = 1) -> float | None:
+    return round(float(value), ndigits) if value is not None else None
+
+
+def _mw(value: Any) -> str:
+    number = _number_or_none(value)
+    return f"{number:,.0f} MW" if number is not None else "N/A"
+
+
+def _pct(value: Any) -> str:
+    number = _number_or_none(value)
+    return f"{number:.1f}%" if number is not None else "N/A"
+
+
 def _build_events(
     ercot: dict[str, Any],
     eia: dict[str, Any],
@@ -992,13 +1405,21 @@ def _build_events(
             "time": now,
             "level": "info",
             "title": "Weather signal",
-            "message": f"{noaa['temperature_f']} F current station average, {noaa['wind_speed_mph']} mph wind.",
+            "message": (
+                f"{noaa['temperature_f']} F current station average, {noaa['wind_speed_mph']} mph wind."
+                if noaa.get("status", {}).get("state") in {"live", "partial", "stale"}
+                else "Waiting for live NOAA/NWS station observations."
+            ),
         },
         {
             "time": now,
             "level": "info",
             "title": "Renewable mix",
-            "message": f"Wind {ercot['wind_mw']:,.0f} MW, solar {ercot['solar_mw']:,.0f} MW.",
+            "message": (
+                f"Wind {ercot['wind_mw']:,.0f} MW, solar {ercot['solar_mw']:,.0f} MW."
+                if _has_grid_measurements(ercot)
+                else "Waiting for live ERCOT wind and solar telemetry."
+            ),
         },
         {
             "time": now,
@@ -1008,17 +1429,15 @@ def _build_events(
         },
     ]
 
-    for source in ("status",):
-        if ercot[source]["state"] != "live" or eia[source]["state"] != "live" or noaa[source]["state"] != "live":
-            events.append(
-                {
-                    "time": now,
-                    "level": "warning",
-                    "title": "Demo fallback active",
-                    "message": "One or more external sources used fallback data. Check credentials and service reachability.",
-                }
-            )
-            break
+    if ercot["status"]["state"] != "live" or eia["status"]["state"] != "live" or noaa["status"]["state"] != "live":
+        events.append(
+            {
+                "time": now,
+                "level": "warning",
+                "title": "Live source pending",
+                "message": "One or more external sources are waiting, partial, stale, or unavailable.",
+            }
+        )
 
     return events
 

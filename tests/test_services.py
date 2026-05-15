@@ -37,8 +37,18 @@ from ercot_dashboard.services.clients import (
     _rt_lmp_report_params,
     _rt_lmp_query_params,
 )
-from ercot_dashboard.services.scenarios import apply_heatwave_scenario, apply_wind_ramp_scenario, preview_scenarios
 from ercot_dashboard.services.events import clear_operator_events, create_operator_event
+
+
+def _as_live(snapshot: dict) -> dict:
+    updated = dict(snapshot)
+    status = dict(updated.get("status") or {})
+    status["state"] = "live"
+    status["message"] = ""
+    updated["status"] = status
+    if isinstance(updated.get("price_status"), dict):
+        updated["price_status"] = {**updated["price_status"], "state": "live", "message": ""}
+    return updated
 
 
 def test_demo_snapshot_has_required_sections() -> None:
@@ -65,12 +75,66 @@ def test_demo_snapshot_has_required_sections() -> None:
     assert snapshot["supply_demand"]["current_day"]
     assert snapshot["trends"]["load_mw"]
     assert snapshot["trends"]["net_load_mw"]
-    for key in ("load_mw", "wind_mw", "solar_mw", "net_load_mw"):
+    for key in ("load_mw", "net_load_mw"):
         assert any(point.get("is_forecast") for point in snapshot["trends"][key])
     assert snapshot["ercot_dashboards"]["prc"]["series"]
     assert snapshot["eia_gas"]["storage"]["series"]
+    assert snapshot["eia_gas"]["balance"]["series"]
     assert snapshot["climate"]["rows"]
+    assert snapshot["diagnostics"]["fuels"]
+    assert snapshot["diagnostics"]["summary"]["dispatchable_outages_mw"] > 0
+    assert any(signal["source"] == "ERCOT Fuel Mix" for signal in snapshot["diagnostics"]["signals"])
     assert set(snapshot["source_status"]) >= {"ercot_dashboards", "eia_gas", "cpc"}
+
+
+def test_diagnostics_feed_includes_realtime_fuel_availability_proxy() -> None:
+    snapshot = asyncio.run(get_dashboard_snapshot(use_live=False))
+
+    natural_gas = next(row for row in snapshot["diagnostics"]["fuels"] if row["fuel"] == "Natural Gas")
+
+    assert natural_gas["hsl_mw"] > natural_gas["generation_mw"]
+    assert natural_gas["unavailable_mw"] > 0
+    assert natural_gas["class"] == "dispatchable"
+    assert any(event["title"] == "Natural Gas availability proxy" for event in snapshot["events"])
+
+
+def test_fuel_mix_dashboard_preserves_hsl_and_capacity_for_diagnostics() -> None:
+    payload = {
+        "types": ["Natural Gas"],
+        "monthlyCapacity": {"Natural Gas": 5000},
+        "data": {
+            "currentDay": {
+                "2026-05-14 15:05:00-0500": {
+                    "Natural Gas": {"gen": 1000, "hsl": 2200, "seasonalCapacity": 5000}
+                }
+            }
+        },
+    }
+
+    fuel_mix = clients_service._normalize_ercot_public_dashboard("fuel_mix", payload)
+
+    latest = fuel_mix["latest"]["mix"][0]
+    assert latest["generation_mw"] == 1000
+    assert latest["hsl_mw"] == 2200
+    assert latest["capacity_mw"] == 5000
+    assert latest["unavailable_mw"] == 2800
+    assert latest["headroom_mw"] == 1200
+
+
+def test_diagnostics_wait_when_live_sources_are_empty() -> None:
+    snapshot = dashboard_service.compose_dashboard_snapshot(
+        ercot=clients_service.empty_ercot_snapshot("x", state="unavailable"),
+        eia=clients_service.empty_eia_snapshot("x", state="unavailable"),
+        noaa=clients_service.empty_noaa_snapshot("x", state="unavailable"),
+        supply_demand=clients_service.empty_supply_demand_snapshot("x", state="unavailable"),
+        ercot_dashboards=clients_service.empty_ercot_public_dashboards("x", state="unavailable"),
+        eia_gas=clients_service.empty_eia_natural_gas("x", state="unavailable"),
+        climate=clients_service.empty_cpc_degree_day_forecast("x", state="unavailable"),
+        fanout={"strategy": "unit", "duration_ms": 0, "source_latency_ms": {}, "sources": 0, "live": False},
+    )
+
+    assert snapshot["diagnostics"]["status"]["state"] == "waiting"
+    assert snapshot["diagnostics"]["signals"] == []
 
 
 def test_operator_events_are_included_in_dashboard_snapshot() -> None:
@@ -150,20 +214,20 @@ def test_live_snapshot_falls_back_when_one_source_raises(monkeypatch) -> None:
     async def failed_eia_fetch(_client):
         raise RuntimeError("unexpected EIA shape")
 
-    monkeypatch.setattr(dashboard_service, "fetch_ercot_snapshot", async_fetch(demo_ercot_snapshot))
+    monkeypatch.setattr(dashboard_service, "fetch_ercot_snapshot", async_fetch(lambda: _as_live(demo_ercot_snapshot())))
     monkeypatch.setattr(dashboard_service, "fetch_eia_snapshot", failed_eia_fetch)
-    monkeypatch.setattr(dashboard_service, "fetch_noaa_snapshot", async_fetch(demo_noaa_snapshot))
-    monkeypatch.setattr(dashboard_service, "fetch_supply_demand_dashboard", async_fetch(demo_supply_demand_snapshot))
-    monkeypatch.setattr(dashboard_service, "fetch_ercot_public_dashboards", async_fetch(demo_ercot_public_dashboards))
-    monkeypatch.setattr(dashboard_service, "fetch_eia_natural_gas", async_fetch(demo_eia_natural_gas))
-    monkeypatch.setattr(dashboard_service, "fetch_cpc_degree_day_forecast", async_fetch(demo_cpc_degree_day_forecast))
+    monkeypatch.setattr(dashboard_service, "fetch_noaa_snapshot", async_fetch(lambda: _as_live(demo_noaa_snapshot())))
+    monkeypatch.setattr(dashboard_service, "fetch_supply_demand_dashboard", async_fetch(lambda: _as_live(demo_supply_demand_snapshot())))
+    monkeypatch.setattr(dashboard_service, "fetch_ercot_public_dashboards", async_fetch(lambda: _as_live(demo_ercot_public_dashboards())))
+    monkeypatch.setattr(dashboard_service, "fetch_eia_natural_gas", async_fetch(lambda: _as_live(demo_eia_natural_gas())))
+    monkeypatch.setattr(dashboard_service, "fetch_cpc_degree_day_forecast", async_fetch(lambda: _as_live(demo_cpc_degree_day_forecast())))
 
     snapshot = asyncio.run(get_dashboard_snapshot())
 
     assert snapshot["metrics"]["stress_index"] >= 0
-    assert snapshot["source_status"]["eia"]["state"] == "demo"
+    assert snapshot["source_status"]["eia"]["state"] == "unavailable"
     assert "RuntimeError" in snapshot["source_status"]["eia"]["message"]
-    assert snapshot["source_status"]["ercot"]["state"] == "demo"
+    assert snapshot["source_status"]["ercot"]["state"] == "live"
 
 
 def test_source_bundle_composition_tracks_group_health() -> None:
@@ -177,19 +241,28 @@ def test_source_bundle_composition_tracks_group_health() -> None:
         "status": {"source": "Source bundle", "state": "live", "message": ""},
         "refresh_policy": {"backoff_seconds": 0, "retry_after": ""},
         "data": {
-            "ercot": demo_ercot_snapshot(),
-            "supply_demand": demo_supply_demand_snapshot(),
+            "ercot": _as_live(demo_ercot_snapshot()),
+            "supply_demand": _as_live(demo_supply_demand_snapshot()),
         },
     }
+    market_prices = _load_zone_lmp_response(
+        {
+            "Houston": {"data": [{"settlementPoint": "LZ_HOUSTON", "LMP": "21.15", "SCEDTimestamp": "2026-05-13T09:00:00"}]},
+            "North": {"data": [{"settlementPoint": "LZ_NORTH", "LMP": "22.15", "SCEDTimestamp": "2026-05-13T09:00:00"}]},
+            "South": {"data": [{"settlementPoint": "LZ_SOUTH", "LMP": "23.15", "SCEDTimestamp": "2026-05-13T09:00:00"}]},
+            "West": {"data": [{"settlementPoint": "LZ_WEST", "LMP": "24.15", "SCEDTimestamp": "2026-05-13T09:00:00"}]},
+        },
+        {},
+    )
     market = {
         "name": "market",
         "timestamp": timestamp,
         "duration_ms": 1.0,
         "latency_ms": {"load_zone_lmps": 1.0},
         "source_count": 1,
-        "status": {"source": "Source bundle", "state": "demo", "message": "Demo LMPs"},
-        "refresh_policy": {"backoff_seconds": 60, "retry_after": "2026-05-13T12:01:00+00:00"},
-        "data": {"load_zone_lmps": dashboard_service.demo_load_zone_lmps()},
+        "status": {"source": "Source bundle", "state": "live", "message": ""},
+        "refresh_policy": {"backoff_seconds": 0, "retry_after": ""},
+        "data": {"load_zone_lmps": market_prices},
     }
 
     snapshot = dashboard_service.compose_dashboard_from_source_bundles(grid=grid, market=market)
@@ -197,78 +270,8 @@ def test_source_bundle_composition_tracks_group_health() -> None:
     assert snapshot["fanout"]["strategy"] == "source-specific async stores"
     assert snapshot["fanout"]["sources"] >= 3
     assert snapshot["source_groups"]["grid"]["status"]["state"] == "live"
-    assert snapshot["source_groups"]["market"]["refresh_policy"]["backoff_seconds"] == 60
+    assert snapshot["source_groups"]["market"]["refresh_policy"]["backoff_seconds"] == 0
     assert snapshot["load_zone_lmps"]["zones"]
-
-
-def test_scenario_preview_returns_parallel_cards() -> None:
-    snapshot = asyncio.run(get_dashboard_snapshot(use_live=False))
-
-    preview = asyncio.run(preview_scenarios(snapshot))
-    cards = {card["label"]: card for card in preview["cards"]}
-
-    assert preview["strategy"] == "asyncio.gather"
-    assert set(cards) == {"Base case", "Heatwave", "Wind ramp"}
-    assert cards["Heatwave"]["load_mw"] > cards["Base case"]["load_mw"]
-    assert cards["Wind ramp"]["wind_mw"] > cards["Base case"]["wind_mw"]
-    assert cards["Heatwave"]["impacts"]
-    assert cards["Wind ramp"]["impacts"]
-
-
-def test_heatwave_scenario_increases_load_and_stress() -> None:
-    snapshot = asyncio.run(get_dashboard_snapshot(use_live=False))
-
-    updated = apply_heatwave_scenario(snapshot)
-
-    assert updated["ercot"]["load_mw"] > snapshot["ercot"]["load_mw"]
-    assert updated["ercot"]["load_zones"][0]["load_mw"] > snapshot["ercot"]["load_zones"][0]["load_mw"]
-    assert updated["ercot"]["load_zones"][0]["price_usd_mwh"] > snapshot["ercot"]["load_zones"][0]["price_usd_mwh"]
-    assert updated["metrics"]["stress_index"] >= snapshot["metrics"]["stress_index"]
-    assert (
-        updated["ercot"]["price_series"]["rt_lmp"][-1]["value"]
-        > snapshot["ercot"]["price_series"]["rt_lmp"][-1]["value"]
-    )
-    assert updated["active_scenario"]["label"] == "Heatwave Simulation"
-    impacts = {impact["label"]: impact for impact in updated["active_scenario"]["impacts"]}
-    assert impacts["Load"]["delta"] > 0
-    assert impacts["Load"]["color"] == "red"
-    assert impacts["Stress"]["delta"] >= 0
-    assert len(updated["active_scenario"]["steps"]) == 4
-    assert updated["events"][0]["title"] == "Heatwave scenario applied"
-
-
-def test_wind_scenario_increases_wind_generation() -> None:
-    snapshot = asyncio.run(get_dashboard_snapshot(use_live=False))
-
-    updated = apply_wind_ramp_scenario(snapshot)
-
-    assert updated["ercot"]["wind_mw"] > snapshot["ercot"]["wind_mw"]
-    assert (
-        updated["ercot"]["load_zones"][0]["generation_mw"]
-        > snapshot["ercot"]["load_zones"][0]["generation_mw"]
-    )
-    assert updated["ercot"]["price_proxy"] < snapshot["ercot"]["price_proxy"]
-    assert (
-        updated["ercot"]["price_series"]["da_lmp"][-1]["value"]
-        < snapshot["ercot"]["price_series"]["da_lmp"][-1]["value"]
-    )
-    assert updated["active_scenario"]["label"] == "Wind Ramp Simulation"
-    impacts = {impact["label"]: impact for impact in updated["active_scenario"]["impacts"]}
-    assert impacts["Wind"]["delta"] > 0
-    assert impacts["Wind"]["color"] == "green"
-    assert impacts["Price"]["delta"] < 0
-    assert impacts["Price"]["color"] == "green"
-    assert updated["events"][0]["title"] == "Wind ramp scenario applied"
-
-
-def test_heatwave_scenario_shifts_supply_demand_chart() -> None:
-    snapshot = asyncio.run(get_dashboard_snapshot(use_live=False))
-    before_peak = snapshot["supply_demand"]["summary"]["peak_demand_mw"]
-
-    updated = apply_heatwave_scenario(snapshot)
-
-    assert updated["supply_demand"]["summary"]["peak_demand_mw"] > before_peak
-    assert updated["trends"]["load_mw"][-1]["value"] > snapshot["trends"]["load_mw"][-1]["value"]
 
 
 def test_supply_demand_payload_normalizes_current_day_rows() -> None:
@@ -309,6 +312,106 @@ def test_supply_demand_payload_normalizes_current_day_rows() -> None:
     assert snapshot["current_day"][1]["available_capacity_mw"] == 74000
     assert snapshot["six_day"][0]["available_capacity_mw"] == 95000
     assert snapshot["summary"]["forecast_points"] == 1
+
+
+def test_combined_renewables_dashboard_keeps_today_through_midnight() -> None:
+    payload = {
+        "lastUpdated": "2026-05-14 14:55:12-0500",
+        "currentDay": {
+            "data": {
+                "1778803200000": {
+                    "hourEnding": 23,
+                    "actualWind": 12000,
+                    "actualSolar": 8000,
+                    "stwpf": 12100,
+                    "stppf": 7900,
+                    "timestamp": "2026-05-14 23:00:00-0500",
+                    "epoch": 1778803200000,
+                },
+                "1778806800000": {
+                    "hourEnding": 24,
+                    "actualWind": None,
+                    "actualSolar": None,
+                    "stwpf": 13000,
+                    "stppf": 0,
+                    "timestamp": "2026-05-15 00:00:00-0500",
+                    "epoch": 1778806800000,
+                },
+                "1778810400000": {
+                    "hourEnding": 1,
+                    "actualWind": None,
+                    "actualSolar": None,
+                    "stwpf": 14000,
+                    "stppf": 0,
+                    "timestamp": "2026-05-15 01:00:00-0500",
+                    "epoch": 1778810400000,
+                },
+            }
+        },
+    }
+
+    snapshot = clients_service._normalize_ercot_public_dashboard("combined_renewables", payload)
+
+    assert [point["timestamp"] for point in snapshot["current_day"]] == [
+        "2026-05-14T23:00:00-05:00",
+        "2026-05-15T00:00:00-05:00",
+    ]
+    assert snapshot["current_day"][0]["combined_actual_mw"] == 20000
+    assert snapshot["current_day"][1]["combined_actual_mw"] is None
+    assert snapshot["current_day"][1]["combined_forecast_mw"] == 13000
+    assert snapshot["summary"]["actual_points"] == 1
+    assert snapshot["summary"]["forecast_points"] == 1
+
+
+def test_dc_tie_flows_dashboard_keeps_current_day_series() -> None:
+    payload = {
+        "lastUpdated": "2026-05-14 15:20:00-0500",
+        "data": [
+            {
+                "currentFrequency": 60.005,
+                "currentSystemInertia": 250751,
+                "dcE": 405,
+                "dcN": 0,
+                "dcL": -1,
+                "dcR": 0,
+                "timestamp": "2026-05-14 00:00:00-0500",
+                "epoch": 1778734800000,
+                "interval": "00:00:00",
+                "dstFlag": "N",
+            },
+            {
+                "currentFrequency": 60.016,
+                "currentSystemInertia": 216426,
+                "dcE": -120,
+                "dcN": 18,
+                "dcL": 25,
+                "dcR": 0,
+                "timestamp": "2026-05-14 15:20:00-0500",
+                "epoch": 1778790000000,
+                "interval": "15:20:00",
+                "dstFlag": "N",
+            },
+            {
+                "dcE": 999,
+                "dcN": 999,
+                "dcL": 999,
+                "dcR": 999,
+                "timestamp": "2026-05-15 00:00:00-0500",
+                "epoch": 1778821200000,
+            },
+        ],
+    }
+
+    snapshot = clients_service._normalize_ercot_public_dashboard("dc_ties", payload)
+
+    assert [point["timestamp"] for point in snapshot["current_day"]] == [
+        "2026-05-14T00:00:00-05:00",
+        "2026-05-14T15:20:00-05:00",
+    ]
+    assert [point["value"] for point in snapshot["series"]["East"]] == [405, -120]
+    assert [point["value"] for point in snapshot["series"]["North"]] == [0, 18]
+    assert snapshot["latest"]["net_mw"] == -77
+    assert snapshot["summary"]["points"] == 2
 
 
 def test_ercot_price_query_targets_hb_north(monkeypatch) -> None:

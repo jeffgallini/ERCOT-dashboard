@@ -2,10 +2,9 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timedelta, timezone
-import time
 from typing import Any
 
-from dash import Input, Output, State, callback_context, set_props
+from dash import Input, Output, State, callback_context
 import dash
 import dash_mantine_components as dmc
 from dash_iconify import DashIconify
@@ -13,22 +12,24 @@ import httpx
 
 from ercot_dashboard.figures import (
     build_ancillary_chart,
-    build_degree_day_chart,
+    build_combined_renewables_chart,
+    build_dc_tie_flows_chart,
+    build_eia_gas_balance_chart,
     build_eia_gas_storage_chart,
     build_ercot_fuel_stack,
-    build_fuel_mix,
+    build_steo_gas_chart,
     build_grid_map,
     build_kpi_sparkline,
+    build_load_zone_price_chart,
     build_outages_chart,
     build_prc_chart,
-    build_steo_gas_chart,
     build_storage_chart,
+    build_system_demand_chart,
     build_system_price_chart,
     build_supply_demand_chart,
 )
 from ercot_dashboard.layout import kpi_card
 from ercot_dashboard.services.dashboard import compose_dashboard_from_source_bundles
-from ercot_dashboard.services.scenarios import apply_heatwave_scenario, apply_wind_ramp_scenario
 
 
 SOURCE_LABELS = {
@@ -115,7 +116,6 @@ def register_callbacks(app: dash.Dash) -> None:
         Input("energy-store", "data"),
         Input("climate-store", "data"),
         Input("market-store", "data"),
-        Input("scenario-control-store", "data"),
     )
     def compose_dashboard(
         grid: dict[str, Any] | None,
@@ -124,7 +124,6 @@ def register_callbacks(app: dash.Dash) -> None:
         energy: dict[str, Any] | None,
         climate: dict[str, Any] | None,
         market: dict[str, Any] | None,
-        scenario_command: dict[str, Any] | None,
     ) -> tuple[dict[str, Any], str, str, str]:
         snapshot = compose_dashboard_from_source_bundles(
             grid=grid,
@@ -134,55 +133,9 @@ def register_callbacks(app: dash.Dash) -> None:
             climate=climate,
             market=market,
         )
-        snapshot = _apply_scenario_command(snapshot, scenario_command)
         loaded_count = sum(bundle is not None for bundle in (grid, ercot_dashboards, weather, energy, climate, market))
         health_color = "green" if loaded_count == 6 else "yellow"
         return snapshot, _format_timestamp(snapshot["timestamp"]), f"{loaded_count}/6 sources", health_color
-
-    @app.callback(
-        Output("scenario-control-store", "data"),
-        Input("heatwave-button", "n_clicks"),
-        Input("wind-button", "n_clicks"),
-        Input("refresh-button", "n_clicks"),
-        prevent_initial_call=True,
-    )
-    def select_scenario(
-        heatwave_clicks: int | None,
-        wind_clicks: int | None,
-        refresh_clicks: int | None,
-    ) -> dict[str, Any]:
-        trigger = callback_context.triggered_id
-        if trigger == "heatwave-button":
-            return {"kind": "heatwave", "selected_at": datetime.now(timezone.utc).isoformat()}
-        if trigger == "wind-button":
-            return {"kind": "wind", "selected_at": datetime.now(timezone.utc).isoformat()}
-        if trigger == "refresh-button":
-            return {}
-        return dash.no_update
-
-    @app.callback(
-        Output("scenario-preview-store", "data"),
-        Input("dashboard-store", "data"),
-        websocket=True,
-    )
-    async def refresh_scenario_preview(snapshot: dict[str, Any] | None) -> dict[str, Any]:
-        if not snapshot:
-            return {"timestamp": "", "strategy": "asyncio.gather", "cards": []}
-        return await _api_post(app, "/api/scenario/preview", snapshot)
-
-    @app.callback(
-        Output("scenario-preview-grid", "children"),
-        Input("scenario-preview-store", "data"),
-    )
-    def render_scenario_preview(preview: dict[str, Any] | None) -> dmc.SimpleGrid:
-        return _scenario_preview_grid(preview)
-
-    @app.callback(
-        Output("active-scenario-impact", "children"),
-        Input("dashboard-store", "data"),
-    )
-    def render_active_scenario(snapshot: dict[str, Any] | None) -> dmc.Box:
-        return _active_scenario_panel(snapshot)
 
     @app.callback(
         Output("market-store", "data"),
@@ -224,55 +177,13 @@ def register_callbacks(app: dash.Dash) -> None:
         return market, prices, _map_prices_complete(prices)
 
     @app.callback(
-        Output("ws-transport-mode", "children"),
-        Output("ws-transport-mode", "color"),
-        Output("fanout-latency-total", "children"),
-        Output("callback-transport-meta", "children"),
-        Output("fanout-latency-grid", "children"),
-        Input("telemetry-interval", "n_intervals"),
-        State("dashboard-store", "data"),
-        websocket=True,
-    )
-    async def update_transport_panel(
-        _heartbeat: int,
-        snapshot: dict[str, Any] | None,
-    ) -> tuple[str, str, str, str, list[dmc.Box] | list[dmc.Skeleton]]:
-        started = time.perf_counter()
-        set_props("ws-side-update-status", {"children": "WS active", "color": "cyan"})
-        await asyncio.sleep(0)
-
-        callback_ms = round((time.perf_counter() - started) * 1000, 1)
-        if not snapshot:
-            set_props("ws-side-update-status", {"children": "Waiting", "color": "gray"})
-            return "WebSocket", "gray", "Waiting", f"{callback_ms:.1f} ms", _latency_placeholders()
-
-        fanout = snapshot.get("fanout", {})
-        latency_ms = fanout.get("source_latency_ms") or {}
-        fanout_ms = float(fanout.get("duration_ms") or 0)
-        set_props("ws-side-update-status", {"children": "Side update OK", "color": "green"})
-        return (
-            "WebSocket",
-            "green",
-            f"{fanout_ms:,.0f} ms",
-            f"{callback_ms:.1f} ms",
-            _latency_rows(latency_ms),
-        )
-
-    @app.callback(
-        Output("async-benefit-card", "children"),
-        Input("dashboard-store", "data"),
-    )
-    def update_async_benefit(snapshot: dict[str, Any] | None) -> dmc.Stack:
-        return _async_benefit_card(snapshot)
-
-    @app.callback(
         Output("kpi-row", "children"),
         Output("system-status", "children"),
         Output("system-status", "color"),
         Input("dashboard-store", "data"),
     )
     def update_kpis(snapshot: dict[str, Any] | None) -> tuple[dmc.Grid, str, str]:
-        if not snapshot:
+        if not _grid_ready(snapshot):
             return _placeholder_kpis(), "Waiting for data", "gray"
 
         ercot = snapshot["ercot"]
@@ -286,7 +197,7 @@ def register_callbacks(app: dash.Dash) -> None:
         net_load_share = _clamp((net_load_mw / max(float(ercot["load_mw"]), 1)) * 100)
         price_proxy = ercot.get("price_proxy")
         price_state = (ercot.get("price_status") or ercot.get("status", {})).get("state")
-        price_available = isinstance(price_proxy, int | float) and price_state not in {"demo", "unavailable"}
+        price_available = isinstance(price_proxy, int | float) and _state_available(price_state)
         kpi_span = {"base": 12, "sm": 6, "lg": 4, "xl": 2}
         cards = dmc.Grid(
             [
@@ -379,11 +290,13 @@ def register_callbacks(app: dash.Dash) -> None:
     @app.callback(
         Output("supply-demand-chart", "figure"),
         Output("supply-demand-caption", "children"),
+        Output("supply-demand-chart-loader", "visible"),
         Input("dashboard-store", "data"),
     )
     def update_supply_demand(snapshot: dict[str, Any] | None):
         caption = ""
-        if snapshot:
+        ready = _supply_demand_ready(snapshot)
+        if snapshot and ready:
             supply = snapshot.get("supply_demand", {})
             summary = supply.get("summary", {})
             last_updated = _format_supply_timestamp(supply.get("last_updated", ""))
@@ -391,35 +304,80 @@ def register_callbacks(app: dash.Dash) -> None:
                 f"{last_updated} | Peak {summary.get('peak_demand_mw', 0):,.0f} MW | "
                 f"Min margin {summary.get('minimum_margin_pct', 0):.1f}%"
             )
-        return build_supply_demand_chart(snapshot), caption
+        return build_supply_demand_chart(snapshot), caption, not ready
 
     @app.callback(
         Output("prc-chart", "figure"),
         Output("system-price-chart", "figure"),
+        Output("system-demand-chart", "figure"),
         Output("ercot-fuel-stack", "figure"),
         Output("storage-chart", "figure"),
+        Output("combined-renewables-chart", "figure"),
         Output("outages-chart", "figure"),
         Output("ancillary-chart", "figure"),
-        Output("eia-gas-storage-chart", "figure"),
-        Output("steo-gas-chart", "figure"),
-        Output("degree-day-chart", "figure"),
+        Output("dc-tie-chart", "figure"),
+        Output("load-zone-price-chart", "figure"),
+        Output("prc-chart-loader", "visible"),
+        Output("system-price-chart-loader", "visible"),
+        Output("system-demand-chart-loader", "visible"),
+        Output("ercot-fuel-stack-loader", "visible"),
+        Output("storage-chart-loader", "visible"),
+        Output("combined-renewables-chart-loader", "visible"),
+        Output("outages-chart-loader", "visible"),
+        Output("ancillary-chart-loader", "visible"),
+        Output("dc-tie-chart-loader", "visible"),
+        Output("load-zone-price-chart-loader", "visible"),
         Input("dashboard-store", "data"),
+        Input("map-price-store", "data"),
     )
-    def update_dashboard_replica(snapshot: dict[str, Any] | None):
+    def update_dashboard_replica(snapshot: dict[str, Any] | None, map_prices: dict[str, Any] | None):
+        snapshot_with_prices = _with_map_prices(snapshot, map_prices)
+        ready = _dashboard_chart_readiness(snapshot_with_prices, map_prices)
         return (
             build_prc_chart(snapshot),
             build_system_price_chart(snapshot),
+            build_system_demand_chart(snapshot),
             build_ercot_fuel_stack(snapshot),
             build_storage_chart(snapshot),
+            build_combined_renewables_chart(snapshot),
             build_outages_chart(snapshot),
             build_ancillary_chart(snapshot),
-            build_eia_gas_storage_chart(snapshot),
-            build_steo_gas_chart(snapshot),
-            build_degree_day_chart(snapshot),
+            build_dc_tie_flows_chart(snapshot),
+            build_load_zone_price_chart(snapshot_with_prices),
+            not ready["prc"],
+            not ready["system_price"],
+            not ready["system_demand"],
+            not ready["fuel_mix"],
+            not ready["storage"],
+            not ready["combined_renewables"],
+            not ready["outages"],
+            not ready["ancillary"],
+            not ready["dc_ties"],
+            not ready["load_zone_prices"],
         )
 
     @app.callback(
-        Output("grid-map", "figure"),
+        Output("eia-gas-storage-chart", "figure"),
+        Output("eia-gas-balance-chart", "figure"),
+        Output("steo-gas-chart", "figure"),
+        Output("eia-gas-storage-chart-loader", "visible"),
+        Output("eia-gas-balance-chart-loader", "visible"),
+        Output("steo-gas-chart-loader", "visible"),
+        Input("dashboard-store", "data"),
+    )
+    def update_eia_gas_charts(snapshot: dict[str, Any] | None):
+        ready = _eia_gas_chart_readiness(snapshot)
+        return (
+            build_eia_gas_storage_chart(snapshot),
+            build_eia_gas_balance_chart(snapshot),
+            build_steo_gas_chart(snapshot),
+            not ready["storage"],
+            not ready["balance"],
+            not ready["steo"],
+        )
+
+    @app.callback(
+        Output("grid-map", "children"),
         Output("map-caption", "children"),
         Output("map-price-loader", "visible"),
         Input("dashboard-store", "data"),
@@ -427,21 +385,12 @@ def register_callbacks(app: dash.Dash) -> None:
     )
     def update_map(snapshot: dict[str, Any] | None, map_prices: dict[str, Any] | None):
         caption = ""
-        if snapshot:
+        if snapshot and _weather_ready(snapshot):
             caption = f"{snapshot['noaa']['station']} | {snapshot['noaa']['wind_speed_mph']} mph wind"
         price_caption = _map_price_caption(map_prices)
         if price_caption:
             caption = f"{caption} | {price_caption}" if caption else price_caption
-        return build_grid_map(_with_map_prices(snapshot, map_prices)), caption, not _map_prices_complete(map_prices)
-
-    @app.callback(
-        Output("fuel-mix", "figure"),
-        Output("fuel-period", "children"),
-        Input("dashboard-store", "data"),
-    )
-    def update_fuel_mix(snapshot: dict[str, Any] | None):
-        period = snapshot["eia"]["latest_period"] if snapshot else ""
-        return build_fuel_mix(snapshot), period
+        return build_grid_map(_with_map_prices(snapshot, map_prices)), caption, not _map_ready(snapshot, map_prices)
 
     @app.callback(
         Output("system-overview", "children"),
@@ -449,7 +398,7 @@ def register_callbacks(app: dash.Dash) -> None:
         Input("dashboard-store", "data"),
     )
     def update_system_overview(snapshot: dict[str, Any] | None):
-        if not snapshot:
+        if not _grid_ready(snapshot):
             return _system_overview_placeholder(), _source_status_placeholders()
 
         ercot = snapshot["ercot"]
@@ -462,6 +411,11 @@ def register_callbacks(app: dash.Dash) -> None:
         renewable_share = _clamp(metrics["renewable_share_pct"])
         weather_pressure = _clamp(max(0, float(noaa["temperature_f"]) - 70) * 3.2)
         status_color = _status_color(status)
+        diagnostics = (snapshot.get("diagnostics") or {}).get("summary") or {}
+        dispatchable_outages = diagnostics.get("dispatchable_outages_mw")
+        fuel_gap = diagnostics.get("largest_fuel_gap_mw")
+        fuel_name = diagnostics.get("largest_fuel_gap_fuel") or "Fuel"
+        prc = diagnostics.get("prc_mw")
 
         overview = dmc.SimpleGrid(
             [
@@ -509,9 +463,24 @@ def register_callbacks(app: dash.Dash) -> None:
                 ),
                 dmc.Stack(
                     [
-                        _fact_tile("Net balance", f"{metrics['balance_mw']:,.0f} MW", "tabler:arrows-exchange-2", "cyan"),
-                        _fact_tile("Wind speed", f"{noaa['wind_speed_mph']:.1f} mph", "tabler:wind", "green"),
-                        _fact_tile("Weather nodes", f"{noaa.get('airport_count', 1)} stations", "tabler:cloud-data-connection", "violet"),
+                        _fact_tile(
+                            "Dispatchable outages",
+                            _format_optional_mw(dispatchable_outages),
+                            "tabler:plug-connected-x",
+                            _mw_status_color(dispatchable_outages, warning=12_000, danger=22_000),
+                        ),
+                        _fact_tile(
+                            f"{fuel_name} gap",
+                            _format_optional_mw(fuel_gap),
+                            "tabler:flame",
+                            _mw_status_color(fuel_gap, warning=3_000, danger=8_000),
+                        ),
+                        _fact_tile(
+                            "PRC",
+                            _format_optional_mw(prc),
+                            "tabler:shield-bolt",
+                            _low_mw_status_color(prc, warning=5_000, danger=3_000),
+                        ),
                     ],
                     gap="sm",
                     className="fact-stack",
@@ -605,7 +574,7 @@ def _snapshot_event_records(snapshot: dict[str, Any] | None) -> list[dict[str, A
             continue
         records.append(
             _event_record(
-                level="warning" if state in {"demo", "partial", "stale"} else "danger",
+                level="warning" if state in {"partial", "stale", "waiting"} else "danger",
                 title=f"{SOURCE_LABELS.get(name, name.replace('_', ' ').title())} source {state.title()}",
                 message=str(status.get("message") or "Source did not return a live response."),
                 source=str(status.get("source") or name),
@@ -725,7 +694,7 @@ def _event_card(event: dict[str, Any]) -> dmc.Box:
                 gap="xs",
                 align="flex-start",
             ),
-            dmc.Text(str(event.get("message") or ""), size="sm", c="dimmed", mt=4, lineClamp=2),
+            dmc.Text(str(event.get("message") or ""), size="sm", c="dimmed", mt=4, lineClamp=3),
         ],
         className="event-card",
     )
@@ -761,44 +730,6 @@ async def _api_get(app: dash.Dash, path: str) -> dict[str, Any]:
         timeout=10,
     ) as client:
         response = await client.get(path)
-        response.raise_for_status()
-        return response.json()
-
-
-def _apply_scenario_command(
-    snapshot: dict[str, Any],
-    command: dict[str, Any] | None,
-) -> dict[str, Any]:
-    if not isinstance(command, dict):
-        return snapshot
-
-    scenario_kind = command.get("kind")
-    try:
-        if scenario_kind == "heatwave":
-            return apply_heatwave_scenario(snapshot)
-        if scenario_kind == "wind":
-            return apply_wind_ramp_scenario(snapshot)
-    except Exception as exc:
-        event = _event_record(
-            level="danger",
-            title="Scenario error",
-            message=f"{type(exc).__name__}: {exc}",
-            source="Scenarios",
-            event_time=_event_time(),
-        )
-        fallback = dict(snapshot)
-        fallback["events"] = [event, *fallback.get("events", [])]
-        return fallback
-    return snapshot
-
-
-async def _api_post(app: dash.Dash, path: str, payload: dict[str, Any]) -> dict[str, Any]:
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app.server),
-        base_url="http://dash-fastapi",
-        timeout=10,
-    ) as client:
-        response = await client.post(path, json=payload)
         response.raise_for_status()
         return response.json()
 
@@ -873,7 +804,7 @@ def _refresh_policy_for_status(status: dict[str, Any]) -> dict[str, Any]:
     backoff_seconds = 0
     if state in {"unavailable", "unknown"}:
         backoff_seconds = 120
-    elif state in {"demo", "partial", "stale"}:
+    elif state in {"partial", "stale"}:
         backoff_seconds = 60
 
     retry_after = ""
@@ -895,413 +826,100 @@ def _placeholder_kpis() -> dmc.Grid:
     )
 
 
-def _scenario_preview_grid(preview: dict[str, Any] | None) -> dmc.SimpleGrid:
-    cards = preview.get("cards") if isinstance(preview, dict) else []
-    if not isinstance(cards, list) or not cards:
-        children = [
-            dmc.Box(
-                dmc.Stack([dmc.Skeleton(h=16, w="70%"), dmc.Skeleton(h=26), dmc.Skeleton(h=12)], gap=8),
-                className="scenario-preview-card",
-            )
-            for _ in range(3)
-        ]
-    else:
-        children = [_scenario_preview_card(card) for card in cards if isinstance(card, dict)]
-
-    return dmc.SimpleGrid(children=children, cols={"base": 1, "sm": 3}, spacing="xs")
-
-
-def _scenario_preview_card(card: dict[str, Any]) -> dmc.Box:
-    label = str(card.get("label") or "Scenario")
-    status = str(card.get("status") or "Unknown")
-    stress = _float_or_zero(card.get("stress_index"))
-    stress_delta = _float_or_zero(card.get("stress_delta"))
-    price = card.get("price_proxy")
-    color = _scenario_preview_color(status, stress_delta)
-    return dmc.Box(
-        [
-            dmc.Group(
-                [
-                    dmc.Text(label, fw=800, size="sm", lineClamp=1),
-                    dmc.Badge(_signed_value(stress_delta), color=color, variant="light", size="sm"),
-                ],
-                justify="space-between",
-                gap=6,
-                wrap="nowrap",
-            ),
-            dmc.Group(
-                [
-                    dmc.Text(f"{stress:.1f}", className="scenario-preview-value"),
-                    dmc.Text("stress", size="xs", c="dimmed"),
-                ],
-                gap=6,
-                align="baseline",
-                mt=4,
-            ),
-            dmc.SimpleGrid(
-                [
-                    _scenario_preview_fact("Load", f"{_float_or_zero(card.get('load_mw')):,.0f} MW"),
-                    _scenario_preview_fact("Wind", f"{_float_or_zero(card.get('wind_mw')):,.0f} MW"),
-                    _scenario_preview_fact("Price", f"${float(price):.2f}" if isinstance(price, int | float) else "N/A"),
-                    _scenario_preview_fact("Status", status),
-                ],
-                cols=2,
-                spacing=6,
-                mt=6,
-            ),
-        ],
-        className=f"scenario-preview-card scenario-preview-{color}",
-    )
-
-
-def _scenario_preview_fact(label: str, value: str) -> dmc.Box:
-    return dmc.Box(
-        [
-            dmc.Text(label, size="xs", c="dimmed", tt="uppercase", fw=800),
-            dmc.Text(value, size="xs", fw=760, lineClamp=1),
-        ],
-        className="scenario-preview-fact",
-    )
-
-
-def _active_scenario_panel(snapshot: dict[str, Any] | None) -> dmc.Box:
-    if not snapshot:
-        return dmc.Box(
-            dmc.Stack([dmc.Skeleton(h=16, w="62%"), dmc.Skeleton(h=32), dmc.Skeleton(h=72)], gap=8),
-            className="active-scenario-card active-scenario-cyan",
-        )
-
-    active = snapshot.get("active_scenario")
-    if not isinstance(active, dict):
-        ercot = snapshot.get("ercot", {})
-        metrics = snapshot.get("metrics", {})
-        return dmc.Box(
-            [
-                dmc.Group(
-                    [
-                        _scenario_title("Base Case", "tabler:activity", "cyan"),
-                        dmc.Badge(str(snapshot.get("system_status") or "Normal"), color=_status_color(str(snapshot.get("system_status") or "Normal")), variant="light"),
-                    ],
-                    justify="space-between",
-                    gap=8,
-                    wrap="nowrap",
-                ),
-                dmc.SimpleGrid(
-                    [
-                        _active_scenario_fact("Load", _number_label(ercot.get("load_mw"), "MW"), "tabler:bolt", "cyan"),
-                        _active_scenario_fact("Wind", _number_label(ercot.get("wind_mw"), "MW"), "tabler:wind", "green"),
-                        _active_scenario_fact("Stress", _number_label(metrics.get("stress_index"), "index", precision=1), "tabler:gauge", _status_color(str(snapshot.get("system_status") or "Normal"))),
-                    ],
-                    cols={"base": 1, "sm": 3},
-                    spacing=6,
-                    mt=8,
-                ),
-            ],
-            className="active-scenario-card active-scenario-cyan",
-        )
-
-    color = str(active.get("color") or "cyan")
-    impacts = [impact for impact in active.get("impacts", []) if isinstance(impact, dict)]
-    steps = [step for step in active.get("steps", []) if isinstance(step, dict)]
-    return dmc.Box(
-        [
-            dmc.Group(
-                [
-                    _scenario_title(
-                        str(active.get("label") or "Scenario"),
-                        str(active.get("icon") or "tabler:adjustments-bolt"),
-                        color,
-                    ),
-                    dmc.Badge(str(active.get("status") or snapshot.get("system_status") or ""), color=color, variant="light"),
-                ],
-                justify="space-between",
-                gap=8,
-                wrap="nowrap",
-            ),
-            dmc.Text(str(active.get("summary") or ""), size="xs", c="dimmed", mt=6, lineClamp=2),
-            dmc.SimpleGrid(
-                [_scenario_impact_tile(impact) for impact in impacts[:6]],
-                cols={"base": 2, "sm": 3},
-                spacing=6,
-                mt=9,
-            ),
-            dmc.Stack([_scenario_step_row(step, color) for step in steps[:4]], gap=6, mt=9),
-        ],
-        className=f"active-scenario-card active-scenario-{color}",
-    )
-
-
-def _scenario_title(label: str, icon: str, color: str) -> dmc.Group:
-    return dmc.Group(
-        [
-            dmc.ThemeIcon(DashIconify(icon=icon, width=17), color=color, variant="light", radius="sm"),
-            dmc.Text(label, fw=850, size="sm", lineClamp=1),
-        ],
-        gap="xs",
-        wrap="nowrap",
-        className="active-scenario-title",
-    )
-
-
-def _active_scenario_fact(label: str, value: str, icon: str, color: str) -> dmc.Box:
-    return dmc.Box(
-        [
-            dmc.Group(
-                [
-                    dmc.ThemeIcon(DashIconify(icon=icon, width=15), color=color, variant="subtle", radius="sm"),
-                    dmc.Text(label, size="xs", c="dimmed", tt="uppercase", fw=800),
-                ],
-                gap=4,
-                wrap="nowrap",
-            ),
-            dmc.Text(value, size="sm", fw=820, mt=2, lineClamp=1),
-        ],
-        className="active-scenario-fact",
-    )
-
-
-def _scenario_impact_tile(impact: dict[str, Any]) -> dmc.Box:
-    direction = str(impact.get("direction") or "flat")
-    color = str(impact.get("color") or "gray")
-    icon = {
-        "up": "tabler:arrow-up-right",
-        "down": "tabler:arrow-down-right",
-        "flat": "tabler:minus",
-    }.get(direction, "tabler:minus")
-    return dmc.Box(
-        [
-            dmc.Group(
-                [
-                    dmc.Text(str(impact.get("label") or "Metric"), size="xs", c="dimmed", tt="uppercase", fw=800, lineClamp=1),
-                    dmc.ThemeIcon(DashIconify(icon=icon, width=14), color=color, variant="subtle", radius="sm", size=22),
-                ],
-                justify="space-between",
-                gap=4,
-                wrap="nowrap",
-            ),
-            dmc.Text(str(impact.get("delta_label") or "+0"), size="sm", fw=850, className=f"impact-value impact-{color}", lineClamp=1),
-            dmc.Text(str(impact.get("after_label") or ""), size="xs", c="dimmed", lineClamp=1),
-        ],
-        className=f"scenario-impact-tile scenario-impact-{color}",
-    )
-
-
-def _scenario_step_row(step: dict[str, Any], color: str) -> dmc.Box:
-    return dmc.Box(
-        dmc.Group(
-            [
-                dmc.Badge(str(step.get("value") or ""), color=color, variant="light", size="sm"),
-                dmc.Stack(
-                    [
-                        dmc.Text(str(step.get("label") or "Scenario step"), size="xs", fw=820, lineClamp=1),
-                        dmc.Text(str(step.get("message") or ""), size="xs", c="dimmed", lineClamp=2),
-                    ],
-                    gap=1,
-                ),
-            ],
-            gap="xs",
-            wrap="nowrap",
-            align="flex-start",
-        ),
-        className="scenario-step-row",
-    )
-
-
-def _scenario_preview_color(status: str, stress_delta: float) -> str:
-    if status == "System Stress" or stress_delta >= 8:
-        return "red"
-    if stress_delta > 0:
-        return "yellow"
-    if stress_delta < 0:
-        return "green"
-    return "cyan"
-
-
-def _signed_value(value: float) -> str:
-    if abs(value) < 0.05:
-        return "+0.0"
-    return f"{value:+.1f}"
-
-
-def _float_or_zero(value: Any) -> float:
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return 0.0
-
-
-def _number_label(value: Any, unit: str, *, precision: int = 0) -> str:
-    if not isinstance(value, int | float):
-        return "N/A"
-    return f"{float(value):,.{precision}f} {unit}"
-
-
-def _latency_placeholders() -> list[dmc.Skeleton]:
-    return [dmc.Skeleton(h=26, radius="sm") for _ in range(4)]
-
-
-def _latency_rows(latency_ms: dict[str, Any]) -> list[dmc.Box]:
-    rows = []
-    numeric = {
-        name: float(value)
-        for name, value in latency_ms.items()
-        if isinstance(value, int | float)
+def _dashboard_chart_readiness(
+    snapshot: dict[str, Any] | None,
+    map_prices: dict[str, Any] | None,
+) -> dict[str, bool]:
+    dashboards = (snapshot or {}).get("ercot_dashboards", {})
+    return {
+        "prc": _points_ready(dashboards.get("prc", {}).get("series")),
+        "system_price": _system_price_ready(snapshot),
+        "system_demand": _supply_demand_ready(snapshot),
+        "fuel_mix": _points_ready(dashboards.get("fuel_mix", {}).get("series")),
+        "storage": _points_ready(dashboards.get("storage", {}).get("current_day")),
+        "combined_renewables": _combined_renewables_ready(snapshot),
+        "outages": _points_ready(dashboards.get("outages", {}).get("current")),
+        "ancillary": _points_ready(dashboards.get("ancillary", {}).get("products")),
+        "dc_ties": _dc_ties_ready(snapshot),
+        "load_zone_prices": _load_zone_prices_ready(snapshot, map_prices),
     }
-    if not numeric:
-        return _latency_placeholders()
-
-    max_latency = max(numeric.values(), default=1) or 1
-    for name, duration in numeric.items():
-        rows.append(
-            dmc.Box(
-                [
-                    dmc.Group(
-                        [
-                            dmc.Text(SOURCE_LABELS.get(name, name.replace("_", " ").title()), size="xs", fw=760),
-                            dmc.Text(f"{duration:,.0f} ms", size="xs", c="dimmed"),
-                        ],
-                        justify="space-between",
-                        wrap="nowrap",
-                        mb=4,
-                    ),
-                    dmc.Progress(
-                        value=_clamp((duration / max_latency) * 100),
-                        color=_latency_color(duration),
-                        size=5,
-                        radius="xl",
-                    ),
-                ],
-                className="latency-row",
-            )
-        )
-    return rows
 
 
-def _async_benefit_card(snapshot: dict[str, Any] | None) -> dmc.Stack:
-    if not snapshot:
-        return dmc.Stack(
-            [
-                dmc.Skeleton(h=20, w="70%"),
-                dmc.Skeleton(h=36),
-                dmc.Skeleton(h=36),
-            ],
-            gap="xs",
-        )
+def _eia_gas_chart_readiness(snapshot: dict[str, Any] | None) -> dict[str, bool]:
+    gas = (snapshot or {}).get("eia_gas", {})
+    return {
+        "storage": _points_ready((gas.get("storage") or {}).get("series")),
+        "balance": _points_ready((gas.get("balance") or {}).get("series")),
+        "steo": _points_ready((gas.get("steo") or {}).get("series")),
+    }
 
-    fanout = snapshot.get("fanout") or {}
-    latency_ms = fanout.get("source_latency_ms") or {}
-    numeric = [
-        float(value)
-        for value in latency_ms.values()
-        if isinstance(value, int | float) and float(value) >= 0
-    ]
-    if not numeric:
-        return dmc.Stack(
-            [
-                dmc.Group(
-                    [
-                        dmc.ThemeIcon(DashIconify(icon="tabler:timeline-event", width=17), color="gray", variant="light", radius="sm"),
-                        dmc.Text("Sync vs async callback fanout", fw=830, size="sm"),
-                    ],
-                    gap="xs",
-                    wrap="nowrap",
-                ),
-                dmc.Text("Waiting for source latency telemetry.", size="xs", c="dimmed"),
-            ],
-            gap="xs",
-        )
 
-    sequential_ms = sum(numeric)
-    async_floor_ms = max(numeric)
-    observed_ms = float(fanout.get("duration_ms") or async_floor_ms)
-    saved_ms = max(0.0, sequential_ms - async_floor_ms)
-    speedup = sequential_ms / async_floor_ms if async_floor_ms else 1
-    scale_ms = max(sequential_ms, async_floor_ms, observed_ms, 1)
-    strategy = str(fanout.get("strategy") or "async fanout")
-
-    return dmc.Stack(
-        [
-            dmc.Group(
-                [
-                    dmc.ThemeIcon(DashIconify(icon="tabler:timeline-event", width=17), color="cyan", variant="light", radius="sm"),
-                    dmc.Stack(
-                        [
-                            dmc.Text("Sync vs async callback fanout", fw=830, size="sm"),
-                            dmc.Text(f"{len(numeric)} upstream waits | {strategy}", size="xs", c="dimmed", lineClamp=1),
-                        ],
-                        gap=1,
-                    ),
-                    dmc.Badge(f"{speedup:.1f}x", color="green" if speedup >= 1.4 else "cyan", variant="light"),
-                ],
-                justify="space-between",
-                gap="xs",
-                wrap="nowrap",
-                align="flex-start",
-            ),
-            _async_benefit_bar("Sync estimate", sequential_ms, scale_ms, "gray", "Sum of each upstream wait"),
-            _async_benefit_bar("Async gather floor", async_floor_ms, scale_ms, "cyan", "Bounded by the slowest wait"),
-            dmc.SimpleGrid(
-                [
-                    _async_benefit_fact("Saved", f"{saved_ms:,.0f} ms", "tabler:clock-bolt", "green"),
-                    _async_benefit_fact("Observed stores", f"{observed_ms:,.0f} ms", "tabler:activity", "violet"),
-                ],
-                cols=2,
-                spacing=6,
-            ),
-        ],
-        gap="xs",
+def _grid_ready(snapshot: dict[str, Any] | None) -> bool:
+    ercot = (snapshot or {}).get("ercot", {})
+    return (
+        _state_available((ercot.get("status") or {}).get("state"))
+        and isinstance(ercot.get("load_mw"), int | float)
+        and isinstance(ercot.get("generation_mw"), int | float)
+        and float(ercot.get("load_mw") or 0) > 0
+        and float(ercot.get("generation_mw") or 0) > 0
     )
 
 
-def _async_benefit_bar(label: str, value_ms: float, scale_ms: float, color: str, caption: str) -> dmc.Box:
-    return dmc.Box(
-        [
-            dmc.Group(
-                [
-                    dmc.Stack(
-                        [
-                            dmc.Text(label, size="xs", c="dimmed", tt="uppercase", fw=800),
-                            dmc.Text(caption, size="xs", c="dimmed", lineClamp=1),
-                        ],
-                        gap=0,
-                    ),
-                    dmc.Text(f"{value_ms:,.0f} ms", className="async-benefit-value"),
-                ],
-                justify="space-between",
-                gap=6,
-                wrap="nowrap",
-                align="flex-start",
-                mb=5,
-            ),
-            dmc.Progress(value=_clamp((value_ms / scale_ms) * 100), color=color, size=6, radius="xl"),
-        ],
-        className="async-benefit-bar",
+def _weather_ready(snapshot: dict[str, Any] | None) -> bool:
+    noaa = (snapshot or {}).get("noaa", {})
+    return _state_available((noaa.get("status") or {}).get("state")) and bool(noaa.get("airports"))
+
+
+def _supply_demand_ready(snapshot: dict[str, Any] | None) -> bool:
+    supply = (snapshot or {}).get("supply_demand", {})
+    return _state_available((supply.get("status") or {}).get("state")) and _points_ready(supply.get("current_day"))
+
+
+def _system_price_ready(snapshot: dict[str, Any] | None) -> bool:
+    ercot = (snapshot or {}).get("ercot", {})
+    price_status = (ercot.get("price_status") or ercot.get("status") or {}).get("state")
+    price_series = ercot.get("price_series") or {}
+    return _state_available(price_status) and (
+        _points_ready(price_series.get("rt_lmp")) or _points_ready(price_series.get("da_lmp"))
     )
 
 
-def _async_benefit_fact(label: str, value: str, icon: str, color: str) -> dmc.Box:
-    return dmc.Box(
-        [
-            dmc.Group(
-                [
-                    dmc.ThemeIcon(DashIconify(icon=icon, width=14), color=color, variant="subtle", radius="sm", size=22),
-                    dmc.Text(label, size="xs", c="dimmed", tt="uppercase", fw=800),
-                ],
-                gap=4,
-                wrap="nowrap",
-            ),
-            dmc.Text(value, size="sm", fw=830, mt=2, lineClamp=1),
-        ],
-        className="active-scenario-fact",
+def _combined_renewables_ready(snapshot: dict[str, Any] | None) -> bool:
+    rows = ((snapshot or {}).get("ercot_dashboards", {}).get("combined_renewables", {}) or {}).get("current_day")
+    if not _points_ready(rows):
+        return False
+    return any(
+        isinstance(point, dict)
+        and (
+            isinstance(point.get("combined_actual_mw"), int | float)
+            or isinstance(point.get("combined_forecast_mw"), int | float)
+        )
+        for point in rows
     )
 
 
-def _latency_color(duration_ms: float) -> str:
-    if duration_ms >= 2000:
-        return "red"
-    if duration_ms >= 900:
-        return "yellow"
-    return "cyan"
+def _dc_ties_ready(snapshot: dict[str, Any] | None) -> bool:
+    series = ((snapshot or {}).get("ercot_dashboards", {}).get("dc_ties", {}) or {}).get("series")
+    return isinstance(series, dict) and any(_points_ready(points) for points in series.values())
+
+
+def _load_zone_prices_ready(snapshot: dict[str, Any] | None, map_prices: dict[str, Any] | None) -> bool:
+    if _map_prices_complete(map_prices):
+        return True
+    zones = (snapshot or {}).get("ercot", {}).get("load_zones") or []
+    return any(isinstance(zone.get("price_usd_mwh"), int | float) for zone in zones if isinstance(zone, dict))
+
+
+def _map_ready(snapshot: dict[str, Any] | None, map_prices: dict[str, Any] | None) -> bool:
+    return _grid_ready(snapshot) and _load_zone_prices_ready(snapshot, map_prices)
+
+
+def _points_ready(points: Any) -> bool:
+    return isinstance(points, list) and bool(points)
+
+
+def _state_available(state: Any) -> bool:
+    return str(state or "") in {"live", "partial", "stale"}
 
 
 def _format_timestamp(value: str) -> str:
@@ -1317,6 +935,8 @@ def _status_color(status: str) -> str:
         return "red"
     if status == "Elevated":
         return "yellow"
+    if status == "Waiting for data":
+        return "gray"
     return "green"
 
 
@@ -1553,6 +1173,32 @@ def _fact_tile(label: str, value: str, icon: str, color: str) -> dmc.Box:
     )
 
 
+def _format_optional_mw(value: Any) -> str:
+    if isinstance(value, int | float):
+        return f"{float(value):,.0f} MW"
+    return "N/A"
+
+
+def _mw_status_color(value: Any, *, warning: float, danger: float) -> str:
+    if not isinstance(value, int | float):
+        return "gray"
+    if float(value) >= danger:
+        return "red"
+    if float(value) >= warning:
+        return "yellow"
+    return "green"
+
+
+def _low_mw_status_color(value: Any, *, warning: float, danger: float) -> str:
+    if not isinstance(value, int | float) or float(value) <= 0:
+        return "gray"
+    if float(value) < danger:
+        return "red"
+    if float(value) < warning:
+        return "yellow"
+    return "green"
+
+
 def _reserve_color(reserve_margin: float) -> str:
     if reserve_margin < 8:
         return "red"
@@ -1568,6 +1214,8 @@ def _source_state_color(state: str, fallback: str) -> str:
         return "yellow"
     if state == "stale":
         return "orange"
-    if state == "demo":
-        return "cyan"
+    if state == "waiting":
+        return "gray"
+    if state == "unavailable":
+        return "red"
     return fallback

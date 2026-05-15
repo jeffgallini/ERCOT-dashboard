@@ -49,6 +49,7 @@ ERCOT_DAY_AHEAD_PRICE_DATE_KEYS = ("deliveryDate", "DeliveryDate", "delivery_dat
 ERCOT_DAY_AHEAD_PRICE_HOUR_KEYS = ("hourEnding", "HourEnding", "deliveryHour", "DeliveryHour")
 EIA_FUEL_MIX_URL = "https://api.eia.gov/v2/electricity/rto/fuel-type-data/data/"
 EIA_GAS_STORAGE_URL = "https://api.eia.gov/v2/natural-gas/stor/wkly/data/"
+EIA_DPR_PAGE_URL = "https://www.eia.gov/petroleum/drilling/"
 EIA_STEO_URL = "https://api.eia.gov/v2/steo/data/"
 NWS_API_BASE_URL = "https://api.weather.gov"
 DEFAULT_NWS_USER_AGENT = "ERCOT Grid Pulse Demo (local development)"
@@ -152,8 +153,41 @@ ERCOT_PUBLIC_DASHBOARDS = {
     "prc": "daily-prc.json",
     "fuel_mix": "fuel-mix.json",
     "storage": "energy-storage-resources.json",
+    "combined_renewables": "combine-wind-solar.json",
+    "dc_ties": "dc-tie-flows.json",
     "outages": "generation-outages.json",
     "ancillary": "ancillary-service-capacity-monitor.json",
+}
+
+ERCOT_PUBLIC_DASHBOARD_FEEDS = {
+    "prc": {
+        "title": "Physical Responsive Capability",
+        "description": "ERCOT grid condition state and PRC time series.",
+    },
+    "fuel_mix": {
+        "title": "Fuel Mix",
+        "description": "Five-minute generation mix by resource type.",
+    },
+    "storage": {
+        "title": "Energy Storage Resources",
+        "description": "Current-day battery charging and discharging.",
+    },
+    "combined_renewables": {
+        "title": "Combined Wind and Solar",
+        "description": "Current-day wind and solar actuals plus hourly forecast.",
+    },
+    "dc_ties": {
+        "title": "DC Tie Flows",
+        "description": "Current-day DC tie flows by interface.",
+    },
+    "outages": {
+        "title": "Generation Outages",
+        "description": "Planned and unplanned generation outage signals.",
+    },
+    "ancillary": {
+        "title": "Ancillary Service Capacity Monitor",
+        "description": "Ancillary service capability and awards.",
+    },
 }
 
 GENERATION_ENDPOINTS = {
@@ -164,13 +198,91 @@ GENERATION_ENDPOINTS = {
 }
 
 EIA_GAS_STORAGE_SERIES = {
+    "east": "NW2_EPG0_SWO_R31_BCF",
+    "midwest": "NW2_EPG0_SWO_R32_BCF",
     "lower_48": "NW2_EPG0_SWO_R48_BCF",
+    "mountain": "NW2_EPG0_SWO_R34_BCF",
+    "pacific": "NW2_EPG0_SWO_R35_BCF",
     "south_central": "NW2_EPG0_SWO_R33_BCF",
+}
+
+EIA_STEO_GAS_BALANCE_SERIES = {
+    "supply_bcf_d": "NGPSUPP",
+    "consumption_bcf_d": "NGTCPUS",
+    "working_inventory_bcf": "NGWGPUS",
 }
 
 EIA_STEO_SERIES = {
     "henry_hub": "NGHHUUS",
     "south_central_inventory": "NGWG_SC",
+}
+EIA_STEO_DRILLING_SERIES = {
+    "appalachia": {
+        "label": "Appalachia",
+        "active_rigs": "RIGSAP",
+        "duc_wells": "DUCSAP",
+        "new_wells_drilled": "NWDAP",
+        "new_wells_completed": "NWCAP",
+        "gas_per_rig_mmcf_d": "NGNWRAP",
+    },
+    "haynesville": {
+        "label": "Haynesville",
+        "active_rigs": "RIGSHA",
+        "duc_wells": "DUCSHA",
+        "new_wells_drilled": "NWDHA",
+        "new_wells_completed": "NWCHA",
+        "gas_per_rig_mmcf_d": "NGNWRHA",
+    },
+    "permian": {
+        "label": "Permian",
+        "active_rigs": "RIGSPM",
+        "duc_wells": "DUCSPM",
+        "new_wells_drilled": "NWDPM",
+        "new_wells_completed": "NWCPM",
+        "gas_per_rig_mmcf_d": "NGNWRPM",
+    },
+    "eagle_ford": {
+        "label": "Eagle Ford",
+        "active_rigs": "RIGSEF",
+        "duc_wells": "DUCSEF",
+        "new_wells_drilled": "NWDEF",
+        "new_wells_completed": "NWCEF",
+        "gas_per_rig_mmcf_d": "NGNWREF",
+    },
+    "bakken": {
+        "label": "Bakken",
+        "active_rigs": "RIGSBK",
+        "duc_wells": "DUCSBK",
+        "new_wells_drilled": "NWDBK",
+        "new_wells_completed": "NWCBK",
+        "gas_per_rig_mmcf_d": "NGNWRBK",
+    },
+    "rest_lower_48": {
+        "label": "Rest of Lower 48",
+        "active_rigs": "RIGSR48",
+        "duc_wells": "DUCSR48",
+        "new_wells_drilled": "NWDR48",
+        "new_wells_completed": "NWCR48",
+        "gas_per_rig_mmcf_d": "NGNWRR48",
+    },
+}
+
+EIA_NATURAL_GAS_FEEDS = {
+    "storage": {
+        "title": "Weekly Natural Gas Storage",
+        "description": "Lower 48 and regional working gas in underground storage.",
+        "source_url": EIA_GAS_STORAGE_URL,
+    },
+    "balance": {
+        "title": "Natural Gas Supply, Demand, and Inventory",
+        "description": "STEO monthly supply, consumption, and working inventory.",
+        "source_url": EIA_STEO_URL,
+    },
+    "steo": {
+        "title": "Natural Gas STEO Outlook",
+        "description": "Henry Hub price and South Central inventory outlook.",
+        "source_url": EIA_STEO_URL,
+    },
 }
 
 _ercot_token_lock = asyncio.Lock()
@@ -233,6 +345,165 @@ def _demo_wave(base: float, amplitude: float, period_hours: float, offset: float
 
 def _status(source: str, state: str, message: str = "") -> dict[str, str]:
     return {"source": source, "state": state, "message": message}
+
+
+def empty_ercot_snapshot(message: str = "Waiting for live ERCOT grid data.", *, state: str = "waiting") -> dict[str, Any]:
+    load_zones = [
+        {
+            "name": name,
+            "settlement_point": LOAD_ZONE_SETTLEMENT_POINTS[name],
+            "lat": point["lat"],
+            "lon": point["lon"],
+            "load_mw": 0.0,
+            "generation_mw": 0.0,
+            "price_usd_mwh": None,
+            "stress": 0.0,
+        }
+        for name, point in REGION_POINTS.items()
+    ]
+    return {
+        "load_mw": 0.0,
+        "generation_mw": 0.0,
+        "wind_mw": 0.0,
+        "solar_mw": 0.0,
+        "price_proxy": None,
+        "price_settlement_point": ERCOT_PRICE_SETTLEMENT_POINT,
+        "price_label": ERCOT_PRICE_SETTLEMENT_POINT_LABEL,
+        "price_series": {"settlement_point": ERCOT_PRICE_SETTLEMENT_POINT, "label": "North Hub", "rt_lmp": [], "da_lmp": []},
+        "price_status": _status("ERCOT RT/DA LMP", state, message),
+        "reserve_margin_pct": 0.0,
+        "load_zones": load_zones,
+        "regions": [dict(zone) for zone in load_zones],
+        "trends": {"load_mw": [], "generation_mw": [], "wind_mw": [], "solar_mw": [], "price_proxy": []},
+        "status": _status("ERCOT", state, message),
+    }
+
+
+def empty_supply_demand_snapshot(message: str = "Waiting for live ERCOT supply and demand data.", *, state: str = "waiting") -> dict[str, Any]:
+    return {
+        "timestamp": utc_now().isoformat(),
+        "last_updated": "",
+        "latest": {},
+        "current_day": [],
+        "six_day": [],
+        "summary": {
+            "peak_demand_mw": 0.0,
+            "minimum_margin_pct": 0.0,
+            "forecast_points": 0,
+        },
+        "status": _status("ERCOT Supply/Demand", state, message),
+    }
+
+
+def empty_ercot_public_dashboards(message: str = "Waiting for live ERCOT public dashboard feeds.", *, state: str = "waiting") -> dict[str, Any]:
+    return {
+        "timestamp": utc_now().isoformat(),
+        "prc": {"last_updated": "", "source_url": f"{ERCOT_DASHBOARD_BASE_URL}/{ERCOT_PUBLIC_DASHBOARDS['prc']}", "condition": {}, "latest_prc_mw": None, "series": []},
+        "fuel_mix": {"last_updated": "", "source_url": f"{ERCOT_DASHBOARD_BASE_URL}/{ERCOT_PUBLIC_DASHBOARDS['fuel_mix']}", "fuel_types": [], "series": [], "latest": {"mix": []}},
+        "storage": {"last_updated": "", "source_url": f"{ERCOT_DASHBOARD_BASE_URL}/{ERCOT_PUBLIC_DASHBOARDS['storage']}", "current_day": [], "previous_day": [], "latest": {}, "summary": {}},
+        "combined_renewables": {
+            "last_updated": "",
+            "source_url": f"{ERCOT_DASHBOARD_BASE_URL}/{ERCOT_PUBLIC_DASHBOARDS['combined_renewables']}",
+            "current_day": [],
+            "latest_actual": {},
+            "summary": {},
+        },
+        "outages": {"last_updated": "", "source_url": f"{ERCOT_DASHBOARD_BASE_URL}/{ERCOT_PUBLIC_DASHBOARDS['outages']}", "current_outages_mw": None, "types": [], "current": [], "previous": [], "latest": {}},
+        "ancillary": {"last_updated": "", "source_url": f"{ERCOT_DASHBOARD_BASE_URL}/{ERCOT_PUBLIC_DASHBOARDS['ancillary']}", "interval": "", "products": [], "system": {}, "groups": {}},
+        "dc_ties": {
+            "last_updated": "",
+            "source_url": f"{ERCOT_DASHBOARD_BASE_URL}/{ERCOT_PUBLIC_DASHBOARDS['dc_ties']}",
+            "current_day": [],
+            "series": {},
+            "latest": {},
+            "summary": {},
+        },
+        "status": _status("ERCOT Dashboards", state, message),
+    }
+
+
+def empty_eia_snapshot(message: str = "Waiting for live EIA fuel data.", *, state: str = "waiting") -> dict[str, Any]:
+    return {
+        "fuel_mix": {},
+        "latest_period": "",
+        "total_mwh": 0.0,
+        "status": _status("EIA", state, message),
+    }
+
+
+def empty_eia_natural_gas(message: str = "Waiting for live EIA natural gas data.", *, state: str = "waiting") -> dict[str, Any]:
+    return {
+        "timestamp": utc_now().isoformat(),
+        "storage": {"source_url": EIA_GAS_STORAGE_URL, "series": [], "latest": {}, "summary": {}},
+        "balance": {"source_url": EIA_STEO_URL, "series": [], "latest": {}, "summary": {}},
+        "steo": {"source_url": EIA_STEO_URL, "series": [], "latest": {}, "summary": {}},
+        "wells": {
+            "source_url": EIA_STEO_URL,
+            "source_page": EIA_DPR_PAGE_URL,
+            "series": [],
+            "regions": [],
+            "latest": {},
+            "summary": {},
+        },
+        "status": _status("EIA Natural Gas", state, message),
+    }
+
+
+def empty_noaa_snapshot(message: str = "Waiting for live NOAA/NWS observations.", *, state: str = "waiting") -> dict[str, Any]:
+    return {
+        "timestamp": utc_now().isoformat(),
+        "temperature_f": 0.0,
+        "daily_high_f": 0.0,
+        "daily_low_f": 0.0,
+        "wind_speed_mph": 0.0,
+        "precipitation_in": 0.0,
+        "observed_date": "",
+        "observed_at": "",
+        "airport_count": 0,
+        "airports": [],
+        "station": "NWS current airport observations",
+        "stream_url": "/ws/weather",
+        "status": _status("NOAA", state, message),
+    }
+
+
+def empty_cpc_degree_day_forecast(
+    message: str = "Waiting for live NOAA CPC degree-day forecast.",
+    *,
+    region: str = CPC_DEFAULT_REGION,
+    state: str = "waiting",
+) -> dict[str, Any]:
+    normalized_region = _normalize_region_name(region)
+    return {
+        "timestamp": utc_now().isoformat(),
+        "issued": "",
+        "region": normalized_region,
+        "states": _cpc_states(normalized_region, ""),
+        "source_url": CPC_DEGREE_DAY_FORECAST_URL,
+        "rows": [],
+        "regions": [],
+        "summary": _degree_day_summary([]),
+        "status": _status("NOAA CPC", state, message),
+    }
+
+
+def empty_load_zone_lmps(message: str = "Waiting for live ERCOT load-zone LMPs.", *, state: str = "waiting") -> dict[str, Any]:
+    return {
+        "timestamp": utc_now().isoformat(),
+        "complete": False,
+        "status": _status("ERCOT Load Zone RT LMP", state, message),
+        "zones": [
+            {
+                "name": zone,
+                "settlement_point": settlement_point,
+                "price_usd_mwh": None,
+                "timestamp": "",
+                "status": state,
+                "diagnostic": {"message": message},
+            }
+            for zone, settlement_point in LOAD_ZONE_SETTLEMENT_POINTS.items()
+        ],
+    }
 
 
 def _ercot_failure_message(failures: dict[str, BaseException]) -> str:
@@ -411,6 +682,59 @@ def list_ercot_reports() -> list[dict[str, Any]]:
     return reports
 
 
+def list_ercot_zone_reports() -> list[dict[str, Any]]:
+    reports = []
+    for zone in LOAD_ZONE_SETTLEMENT_POINTS:
+        reports.extend(
+            [
+                {
+                    "name": f"{zone.lower()}-load",
+                    "title": f"{zone} Load Zone Load Summary",
+                    "ercot_url": ERCOT_BASE_URL + LOAD_ENDPOINTS[zone],
+                    "local_url": f"/api/ercot/load-zones/{zone.lower()}/load",
+                    "default_params": _ercot_params("load"),
+                },
+                {
+                    "name": f"{zone.lower()}-generation",
+                    "title": f"{zone} Load Zone Generation Summary",
+                    "ercot_url": ERCOT_BASE_URL + GENERATION_ENDPOINTS[zone],
+                    "local_url": f"/api/ercot/load-zones/{zone.lower()}/generation",
+                    "default_params": _ercot_params("generation"),
+                },
+            ]
+        )
+    return reports
+
+
+def list_ercot_public_dashboard_feeds() -> list[dict[str, Any]]:
+    feeds = []
+    for name, filename in ERCOT_PUBLIC_DASHBOARDS.items():
+        config = ERCOT_PUBLIC_DASHBOARD_FEEDS[name]
+        feeds.append(
+            {
+                "name": name,
+                "title": config["title"],
+                "description": config["description"],
+                "source_url": f"{ERCOT_DASHBOARD_BASE_URL}/{filename}",
+                "local_url": f"/api/ercot/public-dashboards/{name.replace('_', '-')}",
+            }
+        )
+    return feeds
+
+
+def list_eia_natural_gas_feeds() -> list[dict[str, Any]]:
+    return [
+        {
+            "name": name,
+            "title": str(config["title"]),
+            "description": str(config["description"]),
+            "source_url": str(config["source_url"]),
+            "local_url": f"/api/eia/natural-gas/{name}",
+        }
+        for name, config in EIA_NATURAL_GAS_FEEDS.items()
+    ]
+
+
 async def get_ercot_debug_status(client: httpx.AsyncClient, *, check_reports: bool = False) -> dict[str, Any]:
     diagnostics: dict[str, Any] = {
         "timestamp": utc_now().isoformat(),
@@ -521,6 +845,56 @@ async def fetch_ercot_report(
         "report": payload.get("report", {}),
         "cache_status": payload.get("__local_cache_status"),
     }
+
+
+async def fetch_ercot_zone_report(
+    client: httpx.AsyncClient,
+    zone_name: str,
+    report_kind: str,
+    *,
+    size: int = 20,
+) -> dict[str, Any]:
+    zone = _normalize_load_zone_name(zone_name)
+    kind = _normalize_feed_name(report_kind)
+    if kind not in {"load", "generation"}:
+        raise ValueError("ERCOT zone report kind must be 'load' or 'generation'.")
+
+    size = max(1, min(50, int(size)))
+    endpoint = LOAD_ENDPOINTS[zone] if kind == "load" else GENERATION_ENDPOINTS[zone]
+    title = f"{zone} Load Zone {'Load Summary' if kind == 'load' else 'Generation Summary'}"
+    params = _ercot_params(kind) | {"size": size}
+    headers = await _ercot_headers(client)
+    payload = await _get_ercot_report_json(
+        client,
+        f"{kind}-zone-{zone.lower()}",
+        endpoint,
+        params=params,
+        headers=headers,
+    )
+    rows = _report_rows(payload)
+
+    return {
+        "timestamp": utc_now().isoformat(),
+        "name": f"{zone.lower()}-{kind}",
+        "title": title,
+        "ercot_url": ERCOT_BASE_URL + endpoint,
+        "params": params,
+        "row_count": len(rows),
+        "sample_keys": sorted({str(key) for row in rows[:size] for key in row}),
+        "rows": rows[:size],
+        "meta": payload.get("_meta", {}),
+        "report": payload.get("report", {}),
+        "cache_status": payload.get("__local_cache_status"),
+    }
+
+
+def _normalize_load_zone_name(value: str) -> str:
+    normalized = str(value).strip().replace("-", " ").replace("_", " ").lower()
+    for zone in LOAD_ZONE_SETTLEMENT_POINTS:
+        if zone.lower() == normalized:
+            return zone
+    valid = ", ".join(zone.lower() for zone in LOAD_ZONE_SETTLEMENT_POINTS)
+    raise ValueError(f"Unknown ERCOT load zone '{value}'. Valid zones: {valid}.")
 
 
 async def fetch_ercot_load_zone_lmps(client: httpx.AsyncClient) -> dict[str, Any]:
@@ -1103,9 +1477,7 @@ async def fetch_ercot_snapshot(client: httpx.AsyncClient) -> dict[str, Any]:
         headers = await _ercot_headers(client)
         price_headers = await _ercot_headers(client, for_price=True)
     except Exception as exc:
-        fallback = demo_ercot_snapshot()
-        fallback["status"] = _status("ERCOT", "demo", f"Using demo data: {exc}")
-        return fallback
+        return empty_ercot_snapshot(f"ERCOT credentials or token request failed: {exc}", state="unavailable")
 
     requests = {
         name: (
@@ -1178,14 +1550,14 @@ async def fetch_ercot_snapshot(client: httpx.AsyncClient) -> dict[str, Any]:
                 )
             cached_snapshot["status"] = _status("ERCOT", "stale", f"Using cached ERCOT data after API error: {message}")
             return cached_snapshot
-        fallback = demo_ercot_snapshot()
-        fallback = _with_market_price_data(fallback, price_rows, day_ahead_price_rows, price_status)
-        fallback["status"] = _status(
+        empty = empty_ercot_snapshot(f"ERCOT grid data unavailable after API error: {message}", state="partial" if price_rows or day_ahead_price_rows else "unavailable")
+        empty = _with_market_price_data(empty, price_rows, day_ahead_price_rows, price_status)
+        empty["status"] = _status(
             "ERCOT",
-            "partial" if price_rows or day_ahead_price_rows else "demo",
-            f"Using demo grid data after ERCOT API error: {message}",
+            "partial" if price_rows or day_ahead_price_rows else "unavailable",
+            f"ERCOT grid data unavailable after API error: {message}",
         )
-        return fallback
+        return empty
 
     load_rows = _report_rows(ercot_payloads.get("load", {}))
     generation_rows = _report_rows(ercot_payloads.get("generation", {}))
@@ -1231,15 +1603,15 @@ async def fetch_ercot_snapshot(client: httpx.AsyncClient) -> dict[str, Any]:
     )
     price_proxy = _price_proxy(price_rows, settlement_point=ERCOT_PRICE_SETTLEMENT_POINT)
 
-    if not load_mw or not wind_mw or not solar_mw:
-        fallback = demo_ercot_snapshot()
-        fallback = _with_market_price_data(fallback, price_rows, day_ahead_price_rows, price_status)
-        fallback["status"] = _status(
+    if not load_rows or not generation_rows or not wind_rows or not solar_rows or load_mw <= 0 or generation_mw <= 0:
+        empty = empty_ercot_snapshot("Live ERCOT response did not include expected grid fields.", state="partial" if price_rows or day_ahead_price_rows else "unavailable")
+        empty = _with_market_price_data(empty, price_rows, day_ahead_price_rows, price_status)
+        empty["status"] = _status(
             "ERCOT",
-            "partial" if price_rows or day_ahead_price_rows else "demo",
+            "partial" if price_rows or day_ahead_price_rows else "unavailable",
             "Live ERCOT response did not include expected grid fields.",
         )
-        return fallback
+        return empty
 
     cache_messages = [
         str(payload["__local_cache_status"]["message"])
@@ -1279,19 +1651,11 @@ async def fetch_supply_demand_dashboard(client: httpx.AsyncClient) -> dict[str, 
     try:
         payload = await _get_json(client, ERCOT_SUPPLY_DEMAND_URL)
     except Exception as exc:
-        fallback = demo_supply_demand_snapshot()
-        fallback["status"] = _status("ERCOT Supply/Demand", "demo", f"Using demo data: {exc}")
-        return fallback
+        return empty_supply_demand_snapshot(f"ERCOT Supply/Demand dashboard unavailable: {exc}", state="unavailable")
 
     snapshot = _normalize_supply_demand_payload(payload)
     if not snapshot["current_day"]:
-        fallback = demo_supply_demand_snapshot()
-        fallback["status"] = _status(
-            "ERCOT Supply/Demand",
-            "demo",
-            "Live ERCOT dashboard response did not include current-day rows.",
-        )
-        return fallback
+        return empty_supply_demand_snapshot("Live ERCOT dashboard response did not include current-day rows.", state="unavailable")
 
     snapshot["status"] = _status("ERCOT Supply/Demand", "live")
     return snapshot
@@ -1304,7 +1668,7 @@ async def fetch_ercot_public_dashboards(client: httpx.AsyncClient) -> dict[str, 
     }
     responses = await asyncio.gather(*requests.values(), return_exceptions=True)
 
-    snapshot = demo_ercot_public_dashboards()
+    snapshot = empty_ercot_public_dashboards()
     failures: list[str] = []
     live_count = 0
 
@@ -1324,18 +1688,77 @@ async def fetch_ercot_public_dashboards(client: httpx.AsyncClient) -> dict[str, 
         snapshot["status"] = _status(
             "ERCOT Dashboards",
             "partial",
-            f"{live_count}/{len(requests)} public dashboard feeds normalized; demo fallback filled the rest. "
+            f"{live_count}/{len(requests)} public dashboard feeds normalized. "
             + "; ".join(failures),
         )
     else:
         snapshot["status"] = _status(
             "ERCOT Dashboards",
-            "demo",
-            "Using demo data: ERCOT public dashboard feeds unavailable. " + "; ".join(failures),
+            "unavailable",
+            "ERCOT public dashboard feeds unavailable. " + "; ".join(failures),
         )
 
     snapshot["timestamp"] = utc_now().isoformat()
     return snapshot
+
+
+async def fetch_ercot_public_dashboard_feed(client: httpx.AsyncClient, feed_name: str) -> dict[str, Any]:
+    normalized_name = _normalize_feed_name(feed_name)
+    if normalized_name not in ERCOT_PUBLIC_DASHBOARDS:
+        valid = ", ".join(name.replace("_", "-") for name in ERCOT_PUBLIC_DASHBOARDS)
+        raise ValueError(f"Unknown ERCOT public dashboard feed '{feed_name}'. Valid feeds: {valid}.")
+
+    title = str(ERCOT_PUBLIC_DASHBOARD_FEEDS[normalized_name]["title"])
+    source_url = f"{ERCOT_DASHBOARD_BASE_URL}/{ERCOT_PUBLIC_DASHBOARDS[normalized_name]}"
+    try:
+        payload = await _get_json(client, source_url)
+        data = _normalize_ercot_public_dashboard(normalized_name, payload)
+    except Exception as exc:
+        data = empty_ercot_public_dashboards(
+            f"ERCOT public dashboard feed '{normalized_name}' unavailable: {exc}",
+            state="unavailable",
+        )[normalized_name]
+        return _feed_snapshot(
+            f"ercot-{normalized_name}",
+            provider="ERCOT",
+            title=title,
+            source_url=source_url,
+            status=_status("ERCOT Dashboards", "unavailable", f"{type(exc).__name__}: {exc}"),
+            data=data,
+        )
+
+    return _feed_snapshot(
+        f"ercot-{normalized_name}",
+        provider="ERCOT",
+        title=title,
+        source_url=source_url,
+        status=_status("ERCOT Dashboards", "live"),
+        data=data,
+    )
+
+
+def _normalize_feed_name(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "_", str(value).strip().lower()).strip("_")
+
+
+def _feed_snapshot(
+    name: str,
+    *,
+    provider: str,
+    title: str,
+    source_url: str,
+    status: dict[str, str],
+    data: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "timestamp": utc_now().isoformat(),
+        "name": name,
+        "provider": provider,
+        "title": title,
+        "source_url": source_url,
+        "status": status,
+        "data": data,
+    }
 
 
 def _normalize_ercot_public_dashboard(name: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -1345,6 +1768,10 @@ def _normalize_ercot_public_dashboard(name: str, payload: dict[str, Any]) -> dic
         return _normalize_ercot_fuel_mix_dashboard(payload)
     if name == "storage":
         return _normalize_storage_dashboard(payload)
+    if name == "combined_renewables":
+        return _normalize_combined_renewables_dashboard(payload)
+    if name == "dc_ties":
+        return _normalize_dc_tie_flows_dashboard(payload)
     if name == "outages":
         return _normalize_generation_outages_dashboard(payload)
     if name == "ancillary":
@@ -1389,6 +1816,7 @@ def _normalize_prc_dashboard(payload: dict[str, Any]) -> dict[str, Any]:
 def _normalize_ercot_fuel_mix_dashboard(payload: dict[str, Any]) -> dict[str, Any]:
     raw_data = payload.get("data", {})
     fuel_types = [str(fuel) for fuel in payload.get("types", []) if fuel]
+    monthly_capacity = payload.get("monthlyCapacity") if isinstance(payload.get("monthlyCapacity"), dict) else {}
     series = []
     if isinstance(raw_data, dict):
         for day_data in raw_data.values():
@@ -1398,7 +1826,11 @@ def _normalize_ercot_fuel_mix_dashboard(payload: dict[str, Any]) -> dict[str, An
                 if not isinstance(fuels, dict):
                     continue
                 fuel_values = {
-                    str(fuel): round(_to_float(values.get("gen") if isinstance(values, dict) else values), 2)
+                    str(fuel): round(_fuel_mix_metric(values, "gen") or 0, 2)
+                    for fuel, values in fuels.items()
+                }
+                fuel_details = {
+                    str(fuel): _fuel_mix_detail(str(fuel), values, monthly_capacity)
                     for fuel, values in fuels.items()
                 }
                 total = sum(fuel_values.values())
@@ -1407,6 +1839,7 @@ def _normalize_ercot_fuel_mix_dashboard(payload: dict[str, Any]) -> dict[str, An
                         "timestamp": _ercot_dashboard_timestamp(timestamp),
                         "total_mw": round(total, 2),
                         "fuels": fuel_values,
+                        "fuel_details": fuel_details,
                     }
                 )
 
@@ -1415,14 +1848,7 @@ def _normalize_ercot_fuel_mix_dashboard(payload: dict[str, Any]) -> dict[str, An
     latest = series[-1] if series else {"fuels": {}, "total_mw": 0, "timestamp": ""}
     latest_total = float(latest.get("total_mw") or 0)
     latest_mix = [
-        {
-            "fuel": fuel,
-            "generation_mw": round(value, 1),
-            "share_pct": round((value / latest_total) * 100, 1) if latest_total else 0,
-            "capacity_mw": round(_to_float((payload.get("monthlyCapacity") or {}).get(fuel)), 1)
-            if isinstance(payload.get("monthlyCapacity"), dict)
-            else 0,
-        }
+        _latest_fuel_mix_item(fuel, value, latest_total, latest.get("fuel_details", {}), monthly_capacity)
         for fuel, value in sorted(latest.get("fuels", {}).items(), key=lambda item: item[1], reverse=True)
     ]
 
@@ -1436,6 +1862,72 @@ def _normalize_ercot_fuel_mix_dashboard(payload: dict[str, Any]) -> dict[str, An
             "total_mw": round(latest_total, 1),
             "mix": latest_mix,
         },
+    }
+
+
+def _fuel_mix_metric(values: Any, *keys: str) -> float | None:
+    if isinstance(values, dict):
+        lowered = {str(key).lower(): value for key, value in values.items()}
+        for key in keys:
+            if key.lower() in lowered:
+                return _to_float(lowered[key.lower()])
+        return None
+    return _to_float(values) if "gen" in {key.lower() for key in keys} else None
+
+
+def _fuel_mix_detail(fuel: str, values: Any, monthly_capacity: dict[str, Any]) -> dict[str, float | None]:
+    generation = _fuel_mix_metric(values, "gen")
+    hsl = _fuel_mix_metric(values, "hsl")
+    seasonal_capacity = _fuel_mix_metric(values, "seasonalCapacity", "seasonal_capacity", "capacity")
+    if seasonal_capacity is None:
+        seasonal_capacity = _fuel_mix_metric(monthly_capacity.get(fuel), "gen")
+
+    return {
+        "generation_mw": round(generation, 2) if generation is not None else None,
+        "hsl_mw": round(hsl, 2) if hsl is not None else None,
+        "capacity_mw": round(seasonal_capacity, 2) if seasonal_capacity is not None else None,
+    }
+
+
+def _latest_fuel_mix_item(
+    fuel: str,
+    generation_mw: float,
+    latest_total_mw: float,
+    details: Any,
+    monthly_capacity: dict[str, Any],
+) -> dict[str, Any]:
+    detail = details.get(fuel, {}) if isinstance(details, dict) else {}
+    hsl_mw = detail.get("hsl_mw") if isinstance(detail, dict) else None
+    capacity_mw = detail.get("capacity_mw") if isinstance(detail, dict) else None
+    if capacity_mw is None:
+        capacity_mw = _fuel_mix_metric(monthly_capacity.get(fuel), "gen")
+
+    unavailable_mw = None
+    if isinstance(capacity_mw, int | float) and isinstance(hsl_mw, int | float):
+        unavailable_mw = round(max(float(capacity_mw) - float(hsl_mw), 0), 1)
+
+    headroom_mw = None
+    if isinstance(hsl_mw, int | float):
+        headroom_mw = round(max(float(hsl_mw) - float(generation_mw), 0), 1)
+
+    availability_pct = None
+    if isinstance(capacity_mw, int | float) and float(capacity_mw) > 0 and isinstance(hsl_mw, int | float):
+        availability_pct = round((float(hsl_mw) / float(capacity_mw)) * 100, 1)
+
+    utilization_pct = None
+    if isinstance(hsl_mw, int | float) and float(hsl_mw) > 0:
+        utilization_pct = round((float(generation_mw) / float(hsl_mw)) * 100, 1)
+
+    return {
+        "fuel": fuel,
+        "generation_mw": round(generation_mw, 1),
+        "share_pct": round((generation_mw / latest_total_mw) * 100, 1) if latest_total_mw else 0,
+        "hsl_mw": round(float(hsl_mw), 1) if isinstance(hsl_mw, int | float) else None,
+        "capacity_mw": round(float(capacity_mw), 1) if isinstance(capacity_mw, int | float) else 0,
+        "unavailable_mw": unavailable_mw,
+        "headroom_mw": headroom_mw,
+        "availability_pct": availability_pct,
+        "utilization_pct": utilization_pct,
     }
 
 
@@ -1475,6 +1967,176 @@ def _normalize_storage_day(day_payload: Any) -> list[dict[str, Any]]:
         )
     points.sort(key=lambda point: str(point.get("timestamp", "")))
     return _limit_points(points, 288)
+
+
+def _normalize_combined_renewables_dashboard(payload: dict[str, Any]) -> dict[str, Any]:
+    current_day_payload = payload.get("currentDay", {})
+    raw_data = current_day_payload.get("data", {}) if isinstance(current_day_payload, dict) else {}
+    rows = [row for row in raw_data.values() if isinstance(row, dict)] if isinstance(raw_data, dict) else _coerce_rows(raw_data)
+
+    points = []
+    for row in rows:
+        timestamp = _ercot_dashboard_timestamp(row.get("timestamp"))
+        if not timestamp:
+            continue
+
+        actual_wind = _maybe_num(row, "actualWind")
+        actual_solar = _maybe_num(row, "actualSolar")
+        forecast_wind = _maybe_num(row, "stwpf", "wgrpp", "copHslWind", "stwpfDayAhead", "wgrppDayAhead")
+        forecast_solar = _maybe_num(row, "stppf", "pvgrpp", "copHslSolar", "stppfDayAhead", "pvgrppDayAhead")
+        has_actual = actual_wind is not None or actual_solar is not None
+        has_forecast = forecast_wind is not None or forecast_solar is not None
+        if not has_actual and not has_forecast:
+            continue
+
+        point = {
+            "timestamp": timestamp,
+            "epoch": _maybe_int(row.get("epoch")),
+            "hour_ending": _maybe_int(row.get("hourEnding")),
+            "dst_flag": str(row.get("dstFlag") or ""),
+            "wind_actual_mw": _round_or_none(actual_wind),
+            "solar_actual_mw": _round_or_none(actual_solar),
+            "combined_actual_mw": round(float(actual_wind or 0) + float(actual_solar or 0), 1) if has_actual else None,
+            "wind_forecast_mw": _round_or_none(forecast_wind),
+            "solar_forecast_mw": _round_or_none(forecast_solar),
+            "combined_forecast_mw": round(float(forecast_wind or 0) + float(forecast_solar or 0), 1)
+            if has_forecast
+            else None,
+        }
+        points.append(point)
+
+    points.sort(key=_time_point_sort_key)
+    points = _combined_current_day_points(points)
+    actual_points = [point for point in points if point.get("combined_actual_mw") is not None]
+    forecast_points = [
+        point
+        for point in points
+        if point.get("combined_actual_mw") is None and point.get("combined_forecast_mw") is not None
+    ]
+
+    return {
+        "last_updated": _ercot_dashboard_timestamp(payload.get("lastUpdated")),
+        "source_url": f"{ERCOT_DASHBOARD_BASE_URL}/{ERCOT_PUBLIC_DASHBOARDS['combined_renewables']}",
+        "current_day": points,
+        "latest_actual": actual_points[-1] if actual_points else {},
+        "summary": {
+            "actual_points": len(actual_points),
+            "forecast_points": len(forecast_points),
+            "peak_actual_mw": round(max((float(point["combined_actual_mw"]) for point in actual_points), default=0), 1),
+            "peak_forecast_mw": round(
+                max((float(point["combined_forecast_mw"]) for point in points if point.get("combined_forecast_mw") is not None), default=0),
+                1,
+            ),
+        },
+        "forecast_fields": {"wind": "stwpf", "solar": "stppf"},
+    }
+
+
+def _combined_current_day_points(points: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    parsed_points = [(point, _parse_dashboard_datetime(point.get("timestamp"))) for point in points]
+    parsed_times = [parsed for _point, parsed in parsed_points if parsed is not None]
+    if not parsed_times:
+        return points
+
+    operating_day = min(parsed_times).date()
+    reset_at = datetime.combine(operating_day + timedelta(days=1), datetime.min.time(), tzinfo=parsed_times[0].tzinfo)
+    return [
+        point
+        for point, parsed in parsed_points
+        if parsed is not None and (parsed.date() == operating_day or parsed == reset_at)
+    ]
+
+
+def _parse_dashboard_datetime(value: Any) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _normalize_dc_tie_flows_dashboard(payload: dict[str, Any]) -> dict[str, Any]:
+    rows = [
+        _dc_tie_flow_point(row)
+        for row in _coerce_rows(payload.get("data", []))
+        if isinstance(row, dict)
+    ]
+    points = [point for point in rows if point is not None]
+    points.sort(key=_time_point_sort_key)
+    points = _dc_tie_current_day_points(points)
+    series = {
+        "North": _dc_tie_series(points, "north_mw"),
+        "East": _dc_tie_series(points, "east_mw"),
+        "Laredo": _dc_tie_series(points, "laredo_mw"),
+        "Railroad": _dc_tie_series(points, "railroad_mw"),
+    }
+    latest = points[-1] if points else {}
+    return {
+        "last_updated": _ercot_dashboard_timestamp(payload.get("lastUpdated")),
+        "source_url": f"{ERCOT_DASHBOARD_BASE_URL}/{ERCOT_PUBLIC_DASHBOARDS['dc_ties']}",
+        "current_day": points,
+        "series": series,
+        "latest": latest,
+        "summary": {
+            "points": len(points),
+            "max_import_mw": round(max((float(point.get("total_import_mw") or 0) for point in points), default=0), 1),
+            "max_export_mw": round(min((float(point.get("total_export_mw") or 0) for point in points), default=0), 1),
+        },
+    }
+
+
+def _dc_tie_flow_point(row: dict[str, Any]) -> dict[str, Any] | None:
+    timestamp = _ercot_dashboard_timestamp(row.get("timestamp"))
+    if not timestamp:
+        return None
+
+    values = {
+        "north_mw": _maybe_num(row, "dcN"),
+        "east_mw": _maybe_num(row, "dcE"),
+        "laredo_mw": _maybe_num(row, "dcL"),
+        "railroad_mw": _maybe_num(row, "dcR"),
+    }
+    if all(value is None for value in values.values()):
+        return None
+
+    usable = [float(value) for value in values.values() if value is not None]
+    imports = sum(value for value in usable if value > 0)
+    exports = sum(value for value in usable if value < 0)
+    return {
+        "timestamp": timestamp,
+        "epoch": _maybe_int(row.get("epoch")),
+        "interval": str(row.get("interval") or ""),
+        "dst_flag": str(row.get("dstFlag") or ""),
+        "frequency_hz": _round_or_none(_maybe_num(row, "currentFrequency"), ndigits=3),
+        "system_inertia": _round_or_none(_maybe_num(row, "currentSystemInertia"), ndigits=0),
+        **{key: _round_or_none(value) for key, value in values.items()},
+        "total_import_mw": round(imports, 1),
+        "total_export_mw": round(exports, 1),
+        "net_mw": round(sum(usable), 1),
+    }
+
+
+def _dc_tie_current_day_points(points: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    parsed_points = [(point, _parse_dashboard_datetime(point.get("timestamp"))) for point in points]
+    parsed_times = [parsed for _point, parsed in parsed_points if parsed is not None]
+    if not parsed_times:
+        return points
+
+    operating_day = min(parsed_times).date()
+    return [
+        point
+        for point, parsed in parsed_points
+        if parsed is not None and parsed.date() == operating_day
+    ]
+
+
+def _dc_tie_series(points: list[dict[str, Any]], key: str) -> list[dict[str, Any]]:
+    return [
+        {"timestamp": point.get("timestamp", ""), "value": round(float(point[key]), 1)}
+        for point in points
+        if isinstance(point.get(key), int | float)
+    ]
 
 
 def _normalize_generation_outages_dashboard(payload: dict[str, Any]) -> dict[str, Any]:
@@ -2256,9 +2918,7 @@ def _raw_text(row: dict[str, Any], *keys: str) -> str:
 async def fetch_eia_snapshot(client: httpx.AsyncClient) -> dict[str, Any]:
     api_key = os.getenv("EIA_API_KEY")
     if not api_key:
-        fallback = demo_eia_snapshot()
-        fallback["status"] = _status("EIA", "demo", "EIA_API_KEY is not set.")
-        return fallback
+        return empty_eia_snapshot("EIA_API_KEY is not set.", state="unavailable")
 
     params = {
         "api_key": api_key,
@@ -2274,9 +2934,7 @@ async def fetch_eia_snapshot(client: httpx.AsyncClient) -> dict[str, Any]:
     try:
         payload = await _get_json(client, EIA_FUEL_MIX_URL, params=params)
     except Exception as exc:
-        fallback = demo_eia_snapshot()
-        fallback["status"] = _status("EIA", "demo", f"Using demo data: {exc}")
-        return fallback
+        return empty_eia_snapshot(f"EIA fuel mix request failed: {exc}", state="unavailable")
 
     rows = payload.get("response", {}).get("data", [])
     latest_period = rows[0].get("period") if rows else ""
@@ -2288,9 +2946,7 @@ async def fetch_eia_snapshot(client: httpx.AsyncClient) -> dict[str, Any]:
     }
 
     if not fuel_mix:
-        fallback = demo_eia_snapshot()
-        fallback["status"] = _status("EIA", "demo", "Live EIA response did not include fuel mix rows.")
-        return fallback
+        return empty_eia_snapshot("Live EIA response did not include fuel mix rows.", state="unavailable")
 
     return {
         "fuel_mix": fuel_mix,
@@ -2303,23 +2959,144 @@ async def fetch_eia_snapshot(client: httpx.AsyncClient) -> dict[str, Any]:
 async def fetch_eia_natural_gas(client: httpx.AsyncClient) -> dict[str, Any]:
     api_key = os.getenv("EIA_API_KEY")
     if not api_key:
-        fallback = demo_eia_natural_gas()
-        fallback["status"] = _status("EIA Natural Gas", "demo", "EIA_API_KEY is not set.")
-        return fallback
+        return empty_eia_natural_gas("EIA_API_KEY is not set.", state="unavailable")
 
-    storage_params: list[tuple[str, Any]] = [
+    storage_params = _eia_gas_storage_params(api_key)
+    balance_params = _eia_gas_balance_params(api_key)
+    steo_params = _eia_gas_steo_params(api_key)
+
+    try:
+        storage_payload, balance_payload, steo_payload = await asyncio.gather(
+            _get_json(client, EIA_GAS_STORAGE_URL, params=storage_params),
+            _get_json(client, EIA_STEO_URL, params=balance_params),
+            _get_json(client, EIA_STEO_URL, params=steo_params),
+        )
+    except Exception as exc:
+        return empty_eia_natural_gas(f"EIA natural gas request failed: {exc}", state="unavailable")
+
+    storage = _normalize_eia_gas_storage(storage_payload)
+    balance = _normalize_eia_gas_balance(balance_payload)
+    steo = _normalize_eia_steo_gas(steo_payload)
+    if not storage["series"] or not balance["series"] or not steo["series"]:
+        return empty_eia_natural_gas("Live EIA response did not include gas rows.", state="unavailable")
+
+    return {
+        "timestamp": utc_now().isoformat(),
+        "storage": storage,
+        "balance": balance,
+        "steo": steo,
+        "wells": empty_eia_natural_gas()["wells"],
+        "status": _status("EIA Natural Gas", "live"),
+    }
+
+
+async def fetch_eia_natural_gas_feed(client: httpx.AsyncClient, feed_name: str) -> dict[str, Any]:
+    normalized_name = _normalize_feed_name(feed_name)
+    if normalized_name not in EIA_NATURAL_GAS_FEEDS:
+        valid = ", ".join(EIA_NATURAL_GAS_FEEDS)
+        raise ValueError(f"Unknown EIA natural gas feed '{feed_name}'. Valid feeds: {valid}.")
+
+    config = EIA_NATURAL_GAS_FEEDS[normalized_name]
+    title = str(config["title"])
+    source_url = str(config["source_url"])
+    api_key = os.getenv("EIA_API_KEY")
+    if not api_key:
+        data = empty_eia_natural_gas("EIA_API_KEY is not set.", state="unavailable")[normalized_name]
+        return _feed_snapshot(
+            f"eia-natural-gas-{normalized_name}",
+            provider="EIA",
+            title=title,
+            source_url=source_url,
+            status=_status("EIA Natural Gas", "unavailable", "EIA_API_KEY is not set."),
+            data=data,
+        )
+
+    try:
+        data = await _fetch_eia_natural_gas_feed_data(client, normalized_name, api_key)
+    except Exception as exc:
+        data = empty_eia_natural_gas(
+            f"EIA natural gas feed '{normalized_name}' request failed: {exc}",
+            state="unavailable",
+        )[normalized_name]
+        return _feed_snapshot(
+            f"eia-natural-gas-{normalized_name}",
+            provider="EIA",
+            title=title,
+            source_url=source_url,
+            status=_status("EIA Natural Gas", "unavailable", f"{type(exc).__name__}: {exc}"),
+            data=data,
+        )
+
+    if not data.get("series"):
+        data = empty_eia_natural_gas(
+            f"Live EIA response did not include rows for '{normalized_name}'.",
+            state="unavailable",
+        )[normalized_name]
+        status = _status("EIA Natural Gas", "unavailable", f"Live EIA response did not include rows for '{normalized_name}'.")
+    else:
+        status = _status("EIA Natural Gas", "live")
+
+    return _feed_snapshot(
+        f"eia-natural-gas-{normalized_name}",
+        provider="EIA",
+        title=title,
+        source_url=source_url,
+        status=status,
+        data=data,
+    )
+
+
+async def _fetch_eia_natural_gas_feed_data(
+    client: httpx.AsyncClient,
+    feed_name: str,
+    api_key: str,
+) -> dict[str, Any]:
+    if feed_name == "storage":
+        payload = await _get_json(client, EIA_GAS_STORAGE_URL, params=_eia_gas_storage_params(api_key))
+        return _normalize_eia_gas_storage(payload)
+    if feed_name == "balance":
+        payload = await _get_json(client, EIA_STEO_URL, params=_eia_gas_balance_params(api_key))
+        return _normalize_eia_gas_balance(payload)
+    if feed_name == "steo":
+        payload = await _get_json(client, EIA_STEO_URL, params=_eia_gas_steo_params(api_key))
+        return _normalize_eia_steo_gas(payload)
+    raise ValueError(f"Unknown EIA natural gas feed '{feed_name}'.")
+
+
+def _eia_gas_storage_params(api_key: str) -> list[tuple[str, Any]]:
+    storage_weeks = 104
+    params: list[tuple[str, Any]] = [
         ("api_key", api_key),
         ("frequency", "weekly"),
         ("data[0]", "value"),
         ("sort[0][column]", "period"),
         ("sort[0][direction]", "desc"),
         ("offset", 0),
-        ("length", 104),
+        ("length", storage_weeks * len(EIA_GAS_STORAGE_SERIES)),
     ]
     for series_id in EIA_GAS_STORAGE_SERIES.values():
-        storage_params.append(("facets[series][]", series_id))
+        params.append(("facets[series][]", series_id))
+    return params
 
-    steo_params: list[tuple[str, Any]] = [
+
+def _eia_gas_balance_params(api_key: str) -> list[tuple[str, Any]]:
+    balance_months = 48
+    params: list[tuple[str, Any]] = [
+        ("api_key", api_key),
+        ("frequency", "monthly"),
+        ("data[0]", "value"),
+        ("sort[0][column]", "period"),
+        ("sort[0][direction]", "desc"),
+        ("offset", 0),
+        ("length", balance_months * len(EIA_STEO_GAS_BALANCE_SERIES)),
+    ]
+    for series_id in EIA_STEO_GAS_BALANCE_SERIES.values():
+        params.append(("facets[seriesId][]", series_id))
+    return params
+
+
+def _eia_gas_steo_params(api_key: str) -> list[tuple[str, Any]]:
+    params: list[tuple[str, Any]] = [
         ("api_key", api_key),
         ("frequency", "monthly"),
         ("data[0]", "value"),
@@ -2329,35 +3106,35 @@ async def fetch_eia_natural_gas(client: httpx.AsyncClient) -> dict[str, Any]:
         ("length", 72),
     ]
     for series_id in EIA_STEO_SERIES.values():
-        steo_params.append(("facets[seriesId][]", series_id))
+        params.append(("facets[seriesId][]", series_id))
+    return params
 
-    try:
-        storage_payload, steo_payload = await asyncio.gather(
-            _get_json(client, EIA_GAS_STORAGE_URL, params=storage_params),
-            _get_json(client, EIA_STEO_URL, params=steo_params),
-        )
-    except Exception as exc:
-        fallback = demo_eia_natural_gas()
-        fallback["status"] = _status("EIA Natural Gas", "demo", f"Using demo data: {exc}")
-        return fallback
 
-    storage = _normalize_eia_gas_storage(storage_payload)
-    steo = _normalize_eia_steo_gas(steo_payload)
-    if not storage["series"] or not steo["series"]:
-        fallback = demo_eia_natural_gas()
-        fallback["status"] = _status("EIA Natural Gas", "demo", "Live EIA response did not include gas rows.")
-        return fallback
-
-    return {
-        "timestamp": utc_now().isoformat(),
-        "storage": storage,
-        "steo": steo,
-        "status": _status("EIA Natural Gas", "live"),
-    }
+def _eia_gas_wells_params(api_key: str) -> list[tuple[str, Any]]:
+    drilling_series_ids = [
+        series_id
+        for region in EIA_STEO_DRILLING_SERIES.values()
+        for key, series_id in region.items()
+        if key != "label"
+    ]
+    drilling_months = 36
+    params: list[tuple[str, Any]] = [
+        ("api_key", api_key),
+        ("frequency", "monthly"),
+        ("data[0]", "value"),
+        ("sort[0][column]", "period"),
+        ("sort[0][direction]", "desc"),
+        ("offset", 0),
+        ("length", drilling_months * len(drilling_series_ids)),
+    ]
+    for series_id in drilling_series_ids:
+        params.append(("facets[seriesId][]", series_id))
+    return params
 
 
 def _normalize_eia_gas_storage(payload: dict[str, Any]) -> dict[str, Any]:
     rows = payload.get("response", {}).get("data", [])
+    storage_fields = {series_id: f"{name}_bcf" for name, series_id in EIA_GAS_STORAGE_SERIES.items()}
     by_period: dict[str, dict[str, Any]] = {}
     for row in rows:
         if not isinstance(row, dict):
@@ -2366,29 +3143,83 @@ def _normalize_eia_gas_storage(payload: dict[str, Any]) -> dict[str, Any]:
         if not period:
             continue
         point = by_period.setdefault(period, {"period": period})
-        series = row.get("series")
-        value = round(_to_float(row.get("value")), 1)
-        if series == EIA_GAS_STORAGE_SERIES["lower_48"]:
-            point["lower_48_bcf"] = value
-        elif series == EIA_GAS_STORAGE_SERIES["south_central"]:
-            point["south_central_bcf"] = value
+        field = storage_fields.get(str(row.get("series") or ""))
+        if field:
+            point[field] = round(_to_float(row.get("value")), 1)
 
     series = sorted(by_period.values(), key=lambda point: point["period"])
     latest = series[-1] if series else {}
     previous = series[-2] if len(series) > 1 else {}
+    regions = [
+        {"key": key, "field": f"{key}_bcf", "label": _title_from_key(key)}
+        for key in EIA_GAS_STORAGE_SERIES
+        if key != "lower_48"
+    ]
     return {
         "source_url": EIA_GAS_STORAGE_URL,
         "series": series,
         "latest": latest,
+        "regions": regions,
         "summary": {
             "lower_48_bcf": latest.get("lower_48_bcf", 0),
             "south_central_bcf": latest.get("south_central_bcf", 0),
+            "lower_48_weekly_change_bcf": round(
+                float(latest.get("lower_48_bcf") or 0) - float(previous.get("lower_48_bcf") or 0),
+                1,
+            )
+            if previous
+            else 0,
             "south_central_weekly_change_bcf": round(
                 float(latest.get("south_central_bcf") or 0) - float(previous.get("south_central_bcf") or 0),
                 1,
             )
             if previous
             else 0,
+        },
+    }
+
+
+def _normalize_eia_gas_balance(payload: dict[str, Any]) -> dict[str, Any]:
+    rows = payload.get("response", {}).get("data", [])
+    balance_fields = {series_id: field for field, series_id in EIA_STEO_GAS_BALANCE_SERIES.items()}
+    by_period: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        period = str(row.get("period") or "")
+        if not period:
+            continue
+        field = balance_fields.get(str(row.get("seriesId") or ""))
+        if not field:
+            continue
+        point = by_period.setdefault(period, {"period": period})
+        point[field] = round(_to_float(row.get("value")), 3)
+
+    series = sorted(by_period.values(), key=lambda point: point["period"])
+    for point in series:
+        supply = float(point.get("supply_bcf_d") or 0)
+        consumption = float(point.get("consumption_bcf_d") or 0)
+        point["supply_consumption_gap_bcf_d"] = round(supply - consumption, 3)
+
+    latest = _latest_period_with_value(series, "supply_bcf_d")
+    previous = _previous_period_with_value(series, latest.get("period"), "working_inventory_bcf")
+    return {
+        "source_url": EIA_STEO_URL,
+        "series": series,
+        "latest": latest,
+        "summary": {
+            "latest_period": latest.get("period", ""),
+            "supply_bcf_d": latest.get("supply_bcf_d", 0),
+            "consumption_bcf_d": latest.get("consumption_bcf_d", 0),
+            "working_inventory_bcf": latest.get("working_inventory_bcf", 0),
+            "supply_consumption_gap_bcf_d": latest.get("supply_consumption_gap_bcf_d", 0),
+            "inventory_monthly_change_bcf": round(
+                float(latest.get("working_inventory_bcf") or 0) - float(previous.get("working_inventory_bcf") or 0),
+                3,
+            )
+            if previous
+            else 0,
+            "note": "STEO monthly natural gas supply, consumption, and working inventory.",
         },
     }
 
@@ -2423,11 +3254,127 @@ def _normalize_eia_steo_gas(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _normalize_eia_gas_wells(payload: dict[str, Any]) -> dict[str, Any]:
+    rows = payload.get("response", {}).get("data", [])
+    fields = _eia_drilling_series_fields()
+    by_region_period: dict[tuple[str, str], dict[str, Any]] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        period = str(row.get("period") or "")
+        series_id = str(row.get("seriesId") or "")
+        if not period or series_id not in fields:
+            continue
+        region_key, field = fields[series_id]
+        region_config = EIA_STEO_DRILLING_SERIES[region_key]
+        point = by_region_period.setdefault(
+            (region_key, period),
+            {"period": period, "region": region_config["label"], "region_key": region_key},
+        )
+        value = _to_float(row.get("value"))
+        if field in {"active_rigs", "duc_wells", "new_wells_drilled", "new_wells_completed"}:
+            point[field] = int(round(value))
+        else:
+            point[field] = round(value, 1)
+
+    regions = sorted(
+        by_region_period.values(),
+        key=lambda point: (point["period"], _eia_drilling_region_order(str(point.get("region_key", "")))),
+    )
+    by_period: dict[str, dict[str, Any]] = {}
+    for period in sorted({point["period"] for point in regions}):
+        period_regions = [point for point in regions if point["period"] == period]
+        active_rigs = sum(int(point.get("active_rigs") or 0) for point in period_regions)
+        duc_wells = sum(int(point.get("duc_wells") or 0) for point in period_regions)
+        drilled = sum(int(point.get("new_wells_drilled") or 0) for point in period_regions)
+        completed = sum(int(point.get("new_wells_completed") or 0) for point in period_regions)
+        gas_per_rig_values = [
+            float(point.get("gas_per_rig_mmcf_d") or 0)
+            for point in period_regions
+            if _is_positive_number(point.get("gas_per_rig_mmcf_d"))
+        ]
+        by_period[period] = {
+            "period": period,
+            "active_rigs": active_rigs,
+            "duc_wells": duc_wells,
+            "new_wells_drilled": drilled,
+            "new_wells_completed": completed,
+            "duc_monthly_change": drilled - completed,
+            "gas_per_rig_mmcf_d": round(sum(gas_per_rig_values) / len(gas_per_rig_values), 1) if gas_per_rig_values else 0,
+        }
+
+    series = sorted(by_period.values(), key=lambda point: point["period"])
+    latest = _latest_period_with_value(series, "duc_wells")
+    previous = _previous_period_with_value(series, latest.get("period"), "duc_wells")
+    latest_period = str(latest.get("period") or "")
+    latest_regions = [point for point in regions if point["period"] == latest_period]
+    latest_regions = sorted(
+        latest_regions,
+        key=lambda point: _eia_drilling_region_order(str(point.get("region_key", ""))),
+    )
+    leading_region = max(latest_regions, key=lambda point: float(point.get("gas_per_rig_mmcf_d") or 0), default={})
+
+    return {
+        "source_url": EIA_STEO_URL,
+        "source_page": EIA_DPR_PAGE_URL,
+        "series": series,
+        "regions": latest_regions,
+        "latest": latest,
+        "summary": {
+            "latest_period": latest_period,
+            "active_rigs": latest.get("active_rigs", 0),
+            "duc_wells": latest.get("duc_wells", 0),
+            "new_wells_drilled": latest.get("new_wells_drilled", 0),
+            "new_wells_completed": latest.get("new_wells_completed", 0),
+            "duc_monthly_change": latest.get("duc_monthly_change", 0),
+            "duc_inventory_change": int(latest.get("duc_wells") or 0) - int(previous.get("duc_wells") or 0)
+            if previous
+            else 0,
+            "gas_per_rig_mmcf_d": latest.get("gas_per_rig_mmcf_d", 0),
+            "leading_gas_region": leading_region.get("region", ""),
+            "leading_gas_per_rig_mmcf_d": leading_region.get("gas_per_rig_mmcf_d", 0),
+            "note": "Live STEO drilling productivity metrics formerly published in the Drilling Productivity Report.",
+        },
+    }
+
+
+def _eia_drilling_series_fields() -> dict[str, tuple[str, str]]:
+    fields: dict[str, tuple[str, str]] = {}
+    for region_key, region in EIA_STEO_DRILLING_SERIES.items():
+        for field, series_id in region.items():
+            if field != "label":
+                fields[str(series_id)] = (region_key, field)
+    return fields
+
+
+def _eia_drilling_region_order(region_key: str) -> int:
+    try:
+        return list(EIA_STEO_DRILLING_SERIES).index(region_key)
+    except ValueError:
+        return len(EIA_STEO_DRILLING_SERIES)
+
+
+def _is_positive_number(value: Any) -> bool:
+    return _to_float(value) > 0
+
+
 def _latest_period_with_value(series: Sequence[dict[str, Any]], key: str) -> dict[str, Any]:
     for point in reversed(series):
         if key in point:
             return point
     return dict(series[-1]) if series else {}
+
+
+def _previous_period_with_value(series: Sequence[dict[str, Any]], period: Any, key: str) -> dict[str, Any]:
+    earlier = [point for point in series if point.get("period") != period]
+    for point in reversed(earlier):
+        if key in point:
+            return point
+    return {}
+
+
+def _title_from_key(value: str) -> str:
+    return value.replace("_", " ").title()
 
 
 async def fetch_noaa_snapshot(client: httpx.AsyncClient) -> dict[str, Any]:
@@ -2447,14 +3394,10 @@ async def fetch_cpc_degree_day_forecast(
         )
         snapshot = _parse_cpc_degree_day_forecast(text, region=region)
     except Exception as exc:
-        fallback = demo_cpc_degree_day_forecast(region=region)
-        fallback["status"] = _status("NOAA CPC", "demo", f"Using demo data: {exc}")
-        return fallback
+        return empty_cpc_degree_day_forecast(f"NOAA CPC degree-day request failed: {exc}", region=region, state="unavailable")
 
     if not snapshot["rows"]:
-        fallback = demo_cpc_degree_day_forecast(region=region)
-        fallback["status"] = _status("NOAA CPC", "demo", f"Region '{region}' was not found in CPC forecast text.")
-        return fallback
+        return empty_cpc_degree_day_forecast(f"Region '{region}' was not found in CPC forecast text.", region=region, state="unavailable")
 
     snapshot["status"] = _status("NOAA CPC", "live")
     return snapshot
@@ -2602,17 +3545,15 @@ async def fetch_noaa_airport_weather(
     ]
     live_count = len(live_airports)
     if not live_count:
-        fallback = demo_noaa_airports_snapshot(stations.keys())
         detail = "; ".join(failures) if failures else "No station observations returned."
-        fallback["status"] = _status("NOAA", "demo", f"Using demo data: NWS station observations unavailable. {detail}")
-        return fallback
+        return empty_noaa_snapshot(f"NWS station observations unavailable. {detail}", state="unavailable")
 
     airports = _merge_noaa_airport_rows(live_airports, stations)
     state = "live" if live_count == len(stations) else "partial"
     message = ""
     if state == "partial":
         detail = "; ".join(failures)
-        message = f"{live_count}/{len(stations)} airport stations returned NWS observations; missing stations use demo placeholders."
+        message = f"{live_count}/{len(stations)} airport stations returned NWS observations."
         if detail:
             message = f"{message} {detail}"
 
@@ -2763,10 +3704,7 @@ def _merge_noaa_airport_rows(
     stations: dict[str, dict[str, Any]],
 ) -> list[dict[str, Any]]:
     by_code = {airport["airport"]: airport for airport in live_airports}
-    airports = []
-    for index, (code, station) in enumerate(stations.items()):
-        airports.append(by_code.get(code) or _demo_noaa_airport(code, station, index))
-    return airports
+    return [by_code[code] for code in stations if code in by_code]
 
 
 def _build_noaa_airports_snapshot(
@@ -2775,11 +3713,11 @@ def _build_noaa_airports_snapshot(
     station: str,
     status: dict[str, str],
 ) -> dict[str, Any]:
-    high = _average(_airport_values(airports, "daily_high_f"), default=94)
-    low = _average(_airport_values(airports, "daily_low_f"), default=76)
+    high = _average(_airport_values(airports, "daily_high_f"), default=0)
+    low = _average(_airport_values(airports, "daily_low_f"), default=0)
     temperatures = _airport_values(airports, "temperature_f")
     temperature = _average(temperatures, default=(high + low) / 2)
-    wind = _average(_airport_values(airports, "wind_speed_mph"), default=11)
+    wind = _average(_airport_values(airports, "wind_speed_mph"), default=0)
     precipitation = _average(_airport_values(airports, "precipitation_in"), default=0)
     observed_dates = [str(airport.get("observed_date", "")) for airport in airports if airport.get("observed_date")]
     observed_times = [str(airport.get("observed_at", "")) for airport in airports if airport.get("observed_at")]
@@ -3033,6 +3971,15 @@ def demo_ercot_public_dashboards() -> dict[str, Any]:
     outage_current = []
     fuel_series = []
     fuel_names = ["Natural Gas", "Wind", "Coal and Lignite", "Solar", "Nuclear", "Power Storage", "Other"]
+    fuel_capacity = {
+        "Natural Gas": 67500,
+        "Wind": 43500,
+        "Coal and Lignite": 13200,
+        "Solar": 32300,
+        "Nuclear": 5200,
+        "Power Storage": 9800,
+        "Other": 950,
+    }
     for index, timestamp in enumerate(timestamps):
         hour = timestamp.hour + timestamp.minute / 60
         prc = 6500 + 1600 * math.sin(((hour + 2) / 24) * math.tau) - index * 7
@@ -3073,7 +4020,38 @@ def demo_ercot_public_dashboards() -> dict[str, Any]:
             "Power Storage": round(discharge - charge, 1),
             "Other": 80,
         }
-        fuel_series.append({"timestamp": timestamp.isoformat(), "total_mw": round(sum(fuels.values()), 1), "fuels": fuels})
+        fuel_details = {}
+        for fuel, generation in fuels.items():
+            capacity = fuel_capacity[fuel]
+            if fuel == "Wind":
+                hsl = max(generation * 1.18, 0.34 * capacity)
+            elif fuel == "Solar":
+                hsl = max(generation * 1.12, 0 if generation <= 0 else 0.52 * capacity)
+            elif fuel == "Power Storage":
+                hsl = max(abs(generation) * 1.3, 0.58 * capacity)
+            else:
+                outage_shape = 0.08 + 0.035 * math.sin(((hour + index / 4) / 24) * math.tau)
+                fuel_bias = {
+                    "Natural Gas": 0.18,
+                    "Coal and Lignite": 0.11,
+                    "Nuclear": 0.06,
+                    "Other": 0.2,
+                }.get(fuel, 0.08)
+                hsl = max(generation, capacity * (1 - fuel_bias - outage_shape))
+            fuel_details[fuel] = {
+                "generation_mw": round(generation, 1),
+                "hsl_mw": round(min(capacity, hsl), 1),
+                "capacity_mw": round(capacity, 1),
+            }
+
+        fuel_series.append(
+            {
+                "timestamp": timestamp.isoformat(),
+                "total_mw": round(sum(fuels.values()), 1),
+                "fuels": fuels,
+                "fuel_details": fuel_details,
+            }
+        )
 
     latest_fuel = fuel_series[-1]
     latest_total = float(latest_fuel["total_mw"] or 1)
@@ -3082,10 +4060,47 @@ def demo_ercot_public_dashboards() -> dict[str, Any]:
             "fuel": fuel,
             "generation_mw": round(value, 1),
             "share_pct": round((value / latest_total) * 100, 1),
-            "capacity_mw": round(value * 2.1, 1),
+            "hsl_mw": latest_fuel["fuel_details"][fuel]["hsl_mw"],
+            "capacity_mw": latest_fuel["fuel_details"][fuel]["capacity_mw"],
+            "unavailable_mw": round(
+                max(latest_fuel["fuel_details"][fuel]["capacity_mw"] - latest_fuel["fuel_details"][fuel]["hsl_mw"], 0),
+                1,
+            ),
+            "headroom_mw": round(max(latest_fuel["fuel_details"][fuel]["hsl_mw"] - value, 0), 1),
+            "availability_pct": round(
+                (latest_fuel["fuel_details"][fuel]["hsl_mw"] / max(latest_fuel["fuel_details"][fuel]["capacity_mw"], 1)) * 100,
+                1,
+            ),
+            "utilization_pct": round((value / max(latest_fuel["fuel_details"][fuel]["hsl_mw"], 1)) * 100, 1),
         }
         for fuel, value in sorted(latest_fuel["fuels"].items(), key=lambda item: item[1], reverse=True)
     ]
+
+    combined_current = []
+    for hour_ending in range(1, 25):
+        timestamp = start + timedelta(hours=hour_ending)
+        hour = timestamp.hour or 24
+        wind_forecast = 18400 + 4100 * math.sin(((hour + 1) / 18) * math.tau)
+        solar_forecast = max(0, 32200 * math.sin(((hour - 6.2) / 14) * math.pi))
+        has_actual = timestamp <= now
+        wind_actual = wind_forecast * (0.98 + 0.035 * math.sin(hour))
+        solar_actual = solar_forecast * (0.97 + 0.045 * math.sin(hour / 2))
+        combined_current.append(
+            {
+                "timestamp": timestamp.isoformat(),
+                "epoch": int(timestamp.timestamp() * 1000),
+                "hour_ending": hour_ending,
+                "dst_flag": "N",
+                "wind_actual_mw": round(max(0, wind_actual), 1) if has_actual else None,
+                "solar_actual_mw": round(max(0, solar_actual), 1) if has_actual else None,
+                "combined_actual_mw": round(max(0, wind_actual) + max(0, solar_actual), 1) if has_actual else None,
+                "wind_forecast_mw": round(max(0, wind_forecast), 1),
+                "solar_forecast_mw": round(max(0, solar_forecast), 1),
+                "combined_forecast_mw": round(max(0, wind_forecast) + max(0, solar_forecast), 1),
+            }
+        )
+    combined_actual = [point for point in combined_current if point["combined_actual_mw"] is not None]
+    combined_forecast = [point for point in combined_current if point["combined_actual_mw"] is None]
 
     ancillary_products = [
         {"name": "Responsive Reserve", "capability_mw": 4020, "awards_mw": 2701},
@@ -3115,6 +4130,7 @@ def demo_ercot_public_dashboards() -> dict[str, Any]:
             "source_url": f"{ERCOT_DASHBOARD_BASE_URL}/{ERCOT_PUBLIC_DASHBOARDS['fuel_mix']}",
             "fuel_types": fuel_names,
             "series": fuel_series,
+            "monthlyCapacity": fuel_capacity,
             "latest": {"timestamp": latest_fuel["timestamp"], "total_mw": latest_fuel["total_mw"], "mix": latest_mix},
         },
         "storage": {
@@ -3128,6 +4144,19 @@ def demo_ercot_public_dashboards() -> dict[str, Any]:
                 "max_discharging_mw": round(max(point["discharging_mw"] for point in storage_current), 1),
                 "latest_net_mw": storage_current[-1]["net_mw"],
             },
+        },
+        "combined_renewables": {
+            "last_updated": now.isoformat(),
+            "source_url": f"{ERCOT_DASHBOARD_BASE_URL}/{ERCOT_PUBLIC_DASHBOARDS['combined_renewables']}",
+            "current_day": combined_current,
+            "latest_actual": combined_actual[-1] if combined_actual else {},
+            "summary": {
+                "actual_points": len(combined_actual),
+                "forecast_points": len(combined_forecast),
+                "peak_actual_mw": round(max((point["combined_actual_mw"] for point in combined_actual), default=0), 1),
+                "peak_forecast_mw": round(max((point["combined_forecast_mw"] for point in combined_current), default=0), 1),
+            },
+            "forecast_fields": {"wind": "stwpf", "solar": "stppf"},
         },
         "outages": {
             "last_updated": now.isoformat(),
@@ -3207,21 +4236,48 @@ def demo_eia_snapshot() -> dict[str, Any]:
 def demo_eia_natural_gas() -> dict[str, Any]:
     today = utc_now().date()
     storage_series = []
-    for index in range(52):
-        weeks_back = 51 - index
+    for index in range(104):
+        weeks_back = 103 - index
         period = today - timedelta(days=today.weekday() + 3 + weeks_back * 7)
-        seasonal = math.sin(((index - 12) / 52) * math.tau)
-        lower_48 = 2850 + 760 * seasonal
-        south_central = 940 + 240 * seasonal
+        seasonal = math.sin(((index - 16) / 52) * math.tau)
+        east = 720 + 185 * seasonal
+        midwest = 835 + 220 * seasonal
+        south_central = 940 + 250 * seasonal
+        mountain = 205 + 48 * seasonal
+        pacific = 265 + 64 * seasonal
+        lower_48 = east + midwest + south_central + mountain + pacific
         storage_series.append(
             {
                 "period": period.isoformat(),
                 "lower_48_bcf": round(lower_48, 1),
+                "east_bcf": round(east, 1),
+                "midwest_bcf": round(midwest, 1),
                 "south_central_bcf": round(south_central, 1),
+                "mountain_bcf": round(mountain, 1),
+                "pacific_bcf": round(pacific, 1),
             }
         )
 
     month_start = utc_now().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    balance_series = []
+    for offset in range(-23, 25):
+        period_date = _shift_month(month_start, offset)
+        month = period_date.month
+        seasonal = math.cos(((month - 1) / 12) * math.tau)
+        production_trend = (offset + 23) * 0.08
+        supply = 101.5 + production_trend + 2.5 * math.sin(offset / 8) + 9.8 * max(0, seasonal) - 4.8 * max(0, -seasonal)
+        consumption = 92.0 + 19.5 * max(0, seasonal) + 8.6 * max(0, -seasonal) + 1.3 * math.sin(offset / 5)
+        inventory = 3180 - 620 * seasonal + 65 * math.sin(offset / 4)
+        balance_series.append(
+            {
+                "period": period_date.strftime("%Y-%m"),
+                "supply_bcf_d": round(supply, 3),
+                "consumption_bcf_d": round(consumption, 3),
+                "working_inventory_bcf": round(inventory, 3),
+                "supply_consumption_gap_bcf_d": round(supply - consumption, 3),
+            }
+        )
+
     steo_series = []
     for offset in range(-12, 24):
         period_date = _shift_month(month_start, offset)
@@ -3234,22 +4290,102 @@ def demo_eia_natural_gas() -> dict[str, Any]:
             }
         )
 
+    drilling_region_defs = [
+        ("appalachia", "Appalachia", 43, 820, 92, 88, 28.6),
+        ("haynesville", "Haynesville", 36, 790, 58, 55, 13.5),
+        ("permian", "Permian", 315, 895, 440, 452, 2.6),
+        ("eagle_ford", "Eagle Ford", 49, 345, 71, 76, 6.1),
+        ("bakken", "Bakken", 34, 330, 62, 61, 2.7),
+        ("rest_lower_48", "Rest of Lower 48", 54, 1330, 86, 80, 5.1),
+    ]
+    wells_series = []
+    wells_regions = []
+    for offset in range(-35, 1):
+        period_date = _shift_month(month_start, offset)
+        period = period_date.strftime("%Y-%m")
+        region_rows = []
+        for index, (key, label, rigs, ducs, drilled, completed, gas_per_rig) in enumerate(drilling_region_defs):
+            wave = math.sin((offset + index * 2) / 5)
+            trend = 1 + (offset + 35) * 0.002
+            active_rigs = max(1, int(round(rigs * trend + wave * 4)))
+            duc_wells = max(1, int(round(ducs - (offset + 35) * (2 + index * 0.25) + wave * 12)))
+            new_wells_drilled = max(0, int(round(drilled * trend + wave * 5)))
+            new_wells_completed = max(0, int(round(completed * trend - wave * 4)))
+            productivity = round(gas_per_rig * (1 + (offset + 35) * 0.0015 + 0.018 * wave), 1)
+            region_rows.append(
+                {
+                    "period": period,
+                    "region": label,
+                    "region_key": key,
+                    "active_rigs": active_rigs,
+                    "duc_wells": duc_wells,
+                    "new_wells_drilled": new_wells_drilled,
+                    "new_wells_completed": new_wells_completed,
+                    "duc_monthly_change": new_wells_drilled - new_wells_completed,
+                    "gas_per_rig_mmcf_d": productivity,
+                }
+            )
+
+        if offset == 0:
+            wells_regions = region_rows
+        wells_series.append(
+            {
+                "period": period,
+                "active_rigs": sum(row["active_rigs"] for row in region_rows),
+                "duc_wells": sum(row["duc_wells"] for row in region_rows),
+                "new_wells_drilled": sum(row["new_wells_drilled"] for row in region_rows),
+                "new_wells_completed": sum(row["new_wells_completed"] for row in region_rows),
+                "duc_monthly_change": sum(row["duc_monthly_change"] for row in region_rows),
+                "gas_per_rig_mmcf_d": round(sum(row["gas_per_rig_mmcf_d"] for row in region_rows) / len(region_rows), 1),
+            }
+        )
+
     latest_storage = storage_series[-1]
     previous_storage = storage_series[-2]
+    latest_balance = balance_series[-1]
+    previous_balance = balance_series[-2]
     latest_steo = _latest_period_with_value(steo_series, "henry_hub_usd_mmbtu")
+    latest_wells = wells_series[-1]
+    previous_wells = wells_series[-2]
+    leading_region = max(wells_regions, key=lambda row: row["gas_per_rig_mmcf_d"])
     return {
         "timestamp": utc_now().isoformat(),
         "storage": {
             "source_url": EIA_GAS_STORAGE_URL,
             "series": storage_series,
             "latest": latest_storage,
+            "regions": [
+                {"key": "east", "field": "east_bcf", "label": "East"},
+                {"key": "midwest", "field": "midwest_bcf", "label": "Midwest"},
+                {"key": "south_central", "field": "south_central_bcf", "label": "South Central"},
+                {"key": "mountain", "field": "mountain_bcf", "label": "Mountain"},
+                {"key": "pacific", "field": "pacific_bcf", "label": "Pacific"},
+            ],
             "summary": {
                 "lower_48_bcf": latest_storage["lower_48_bcf"],
                 "south_central_bcf": latest_storage["south_central_bcf"],
+                "lower_48_weekly_change_bcf": round(latest_storage["lower_48_bcf"] - previous_storage["lower_48_bcf"], 1),
                 "south_central_weekly_change_bcf": round(
                     latest_storage["south_central_bcf"] - previous_storage["south_central_bcf"],
                     1,
                 ),
+            },
+        },
+        "balance": {
+            "source_url": EIA_STEO_URL,
+            "series": balance_series,
+            "latest": latest_balance,
+            "summary": {
+                "latest_period": latest_balance["period"],
+                "supply_bcf_d": latest_balance["supply_bcf_d"],
+                "consumption_bcf_d": latest_balance["consumption_bcf_d"],
+                "working_inventory_bcf": latest_balance["working_inventory_bcf"],
+                "supply_consumption_gap_bcf_d": latest_balance["supply_consumption_gap_bcf_d"],
+                "inventory_monthly_change_bcf": round(
+                    latest_balance["working_inventory_bcf"] - previous_balance["working_inventory_bcf"],
+                    3,
+                ),
+                "note": "STEO monthly natural gas supply, consumption, and working inventory.",
             },
         },
         "steo": {
@@ -3259,6 +4395,26 @@ def demo_eia_natural_gas() -> dict[str, Any]:
             "summary": {
                 "latest_henry_hub_usd_mmbtu": latest_steo["henry_hub_usd_mmbtu"],
                 "latest_period": latest_steo["period"],
+            },
+        },
+        "wells": {
+            "source_url": EIA_STEO_URL,
+            "source_page": EIA_DPR_PAGE_URL,
+            "series": wells_series,
+            "regions": wells_regions,
+            "latest": latest_wells,
+            "summary": {
+                "latest_period": latest_wells["period"],
+                "active_rigs": latest_wells["active_rigs"],
+                "duc_wells": latest_wells["duc_wells"],
+                "new_wells_drilled": latest_wells["new_wells_drilled"],
+                "new_wells_completed": latest_wells["new_wells_completed"],
+                "duc_monthly_change": latest_wells["duc_monthly_change"],
+                "duc_inventory_change": latest_wells["duc_wells"] - previous_wells["duc_wells"],
+                "gas_per_rig_mmcf_d": latest_wells["gas_per_rig_mmcf_d"],
+                "leading_gas_region": leading_region["region"],
+                "leading_gas_per_rig_mmcf_d": leading_region["gas_per_rig_mmcf_d"],
+                "note": "Live STEO drilling productivity metrics formerly published in the Drilling Productivity Report.",
             },
         },
         "status": _status("EIA Natural Gas", "demo"),

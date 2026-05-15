@@ -1,13 +1,14 @@
 from __future__ import annotations
 
+import dash_leaflet as dl
 from fastapi.testclient import TestClient
 
 from ercot_dashboard.app import create_app
-from ercot_dashboard.layout import PROCESS_HELP_TOPICS, TIP_TOPICS
+from ercot_dashboard.layout import PROCESS_HELP_TOPICS, TIP_TOPICS, build_layout
 from ercot_dashboard.services.events import clear_operator_events
 
 
-def test_transport_panel_callback_uses_dash_websocket_transport() -> None:
+def test_event_feed_uses_dash_websocket_transport() -> None:
     app = create_app()
 
     websocket_callbacks = [
@@ -16,14 +17,25 @@ def test_transport_panel_callback_uses_dash_websocket_transport() -> None:
         if callback.get("websocket")
     ]
 
-    assert (
-        "..ws-transport-mode.children...ws-transport-mode.color..."
-        "fanout-latency-total.children...callback-transport-meta.children..."
-        "fanout-latency-grid.children.."
-    ) in websocket_callbacks
     assert "event-log-store.data" in websocket_callbacks
-    assert "active-scenario-impact.children" in app.callback_map
-    assert "async-benefit-card.children" in app.callback_map
+    assert any(
+        callback_id.startswith("..prc-chart.figure...system-price-chart.figure...system-demand-chart.figure")
+        for callback_id in app.callback_map
+    )
+
+
+def test_leaflet_map_is_fixed_viewport() -> None:
+    layout = build_layout()
+    grid_map = _find_component(layout, "grid-map")
+
+    assert isinstance(grid_map, dl.Map)
+    assert grid_map.zoomControl is False
+    assert grid_map.dragging is False
+    assert grid_map.scrollWheelZoom is False
+    assert grid_map.doubleClickZoom is False
+    assert grid_map.boxZoom is False
+    assert grid_map.touchZoom is False
+    assert grid_map.keyboard is False
 
 
 def test_dash42_field_guide_covers_requested_topics() -> None:
@@ -48,22 +60,49 @@ def test_fastapi_openapi_docs_are_curated_for_demo_sources() -> None:
         "EIA",
         "Weather",
         "Events",
-        "Scenarios",
         "Streams",
     ]
     assert schema["paths"]["/api/dashboard"]["get"]["tags"] == ["Operations"]
+    assert schema["paths"]["/api/feeds"]["get"]["tags"] == ["Operations"]
+    assert schema["paths"]["/api/ercot/grid"]["get"]["tags"] == ["ERCOT"]
+    assert schema["paths"]["/api/ercot/system-load"]["get"]["tags"] == ["ERCOT"]
+    assert schema["paths"]["/api/ercot/load-zones/{zone_name}/load"]["get"]["tags"] == ["ERCOT"]
+    assert schema["paths"]["/api/ercot/load-zones/{zone_name}/generation"]["get"]["tags"] == ["ERCOT"]
+    assert schema["paths"]["/api/ercot/public-dashboards/{feed_name}"]["get"]["tags"] == ["ERCOT"]
+    assert schema["paths"]["/api/eia/fuel-mix"]["get"]["tags"] == ["EIA"]
+    assert schema["paths"]["/api/eia/natural-gas/{feed_name}"]["get"]["tags"] == ["EIA"]
     assert schema["paths"]["/api/eia/natural-gas"]["get"]["tags"] == ["EIA"]
     assert schema["paths"]["/api/weather/airports"]["get"]["tags"] == ["Weather"]
+    assert schema["paths"]["/api/weather/airports/{airport_code}"]["get"]["tags"] == ["Weather"]
     assert schema["paths"]["/api/ercot/load-zone-lmps"]["get"]["tags"] == ["ERCOT Market"]
     assert schema["paths"]["/api/events"]["post"]["tags"] == ["Events"]
     assert schema["paths"]["/api/events/{event_id}"]["put"]["tags"] == ["Events"]
     assert schema["paths"]["/api/events/{event_id}"]["delete"]["tags"] == ["Events"]
-    assert schema["paths"]["/api/scenario/preview"]["post"]["tags"] == ["Scenarios"]
+    assert "/api/scenario/preview" not in schema["paths"]
     assert "/api/streams" in schema["paths"]
     assert "/api/docs/swagger-theme.css" not in schema["paths"]
     assert "DashboardSnapshot" in schema["components"]["schemas"]
-    assert "ScenarioInput" in schema["components"]["schemas"]
+    assert "FeedCatalogResponse" in schema["components"]["schemas"]
+    assert "FeedSnapshotResponse" in schema["components"]["schemas"]
+    assert "ScenarioInput" not in schema["components"]["schemas"]
     assert "OperatorEventCreate" in schema["components"]["schemas"]
+
+
+def test_feed_catalog_lists_individual_source_routes() -> None:
+    app = create_app()
+    client = TestClient(app.server)
+
+    response = client.get("/api/feeds")
+
+    assert response.status_code == 200
+    feeds = {feed["local_url"]: feed for feed in response.json()["feeds"]}
+    assert "/api/ercot/system-load" in feeds
+    assert "/api/ercot/load-zones/houston/load" in feeds
+    assert "/api/ercot/load-zones/houston/generation" in feeds
+    assert "/api/ercot/public-dashboards/prc" in feeds
+    assert "/api/eia/fuel-mix" in feeds
+    assert "/api/eia/natural-gas/storage" in feeds
+    assert "/api/weather/airports/DFW" in feeds
 
 
 def test_custom_swagger_theme_is_served_from_fastapi() -> None:
@@ -122,3 +161,19 @@ def test_operator_event_crud_endpoints_change_event_store() -> None:
         assert missing.status_code == 404
     finally:
         clear_operator_events()
+
+
+def _find_component(component: object, component_id: str) -> object:
+    if getattr(component, "id", None) == component_id:
+        return component
+
+    children = getattr(component, "children", None)
+    if isinstance(children, list | tuple):
+        for child in children:
+            match = _find_component(child, component_id)
+            if match is not None:
+                return match
+    elif children is not None:
+        return _find_component(children, component_id)
+
+    return None
